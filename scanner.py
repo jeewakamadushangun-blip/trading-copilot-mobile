@@ -12,6 +12,13 @@ ASSETS = {
     "Gold / USD": "GC=F",
 }
 
+TRADINGVIEW_SYMBOLS = {
+    "EUR/USD": "FX:EURUSD",
+    "GBP/USD": "FX:GBPUSD",
+    "USD/JPY": "FX:USDJPY",
+    "Gold / USD": "OANDA:XAUUSD",
+}
+
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
@@ -26,16 +33,22 @@ def get_current_session():
     return "Off-Peak / Custom Trigger"
 
 
-def send_discord_alert(title, description, color=0x00FF88):
+def send_discord_alert(title, description, asset_name, color=0x00FF88):
   if not DISCORD_WEBHOOK_URL:
     return
   session_name = get_current_session()
+  tv_sym = TRADINGVIEW_SYMBOLS.get(asset_name, "FX:EURUSD")
+  tv_link = f"https://www.tradingview.com/chart/?symbol={tv_sym}&interval=60"
+
+  formatted_description = f"{description}\n\n🔗 **[📱 Tap to Open {asset_name} on TradingView (1H)]({tv_link})**"
+
   payload = {
       "username": "AI Trading Copilot",
       "avatar_url": "https://cdn-icons-png.flaticon.com/512/2936/2936886.png",
       "embeds": [{
           "title": title,
-          "description": description,
+          "url": tv_link,
+          "description": formatted_description,
           "color": color,
           "footer": {
               "text": (
@@ -69,6 +82,7 @@ def compute_atr(df, period=14):
 def check_markets_strict():
   session = get_current_session()
   confirmed_setups = []
+  primary_asset = "EUR/USD"
 
   for name, symbol in ASSETS.items():
     try:
@@ -109,6 +123,7 @@ def check_markets_strict():
       )
 
       if is_bullish:
+        primary_asset = name
         confirmed_setups.append(f"""
 ASSET: {name} (BUY SETUP)
 - Live Price: {price:.5f}
@@ -118,6 +133,7 @@ ASSET: {name} (BUY SETUP)
 - Dynamic 9 EMA rejection confirmed.
 """)
       elif is_bearish:
+        primary_asset = name
         confirmed_setups.append(f"""
 ASSET: {name} (SELL SETUP)
 - Live Price: {price:.5f}
@@ -151,7 +167,7 @@ If valid, formulate an ATR-sized trade card:
 4. Dynamic ATR Stop Loss: (1.5x ATR buffer, dollar risk strictly under $2.00 on $100 capital)
 5. Take Profit Target: (3.0x ATR buffer for 1:2 R:R)
 6. Simple Thesis: 1 sentence on session momentum + EMA bounce.
-7. 3-step execution for TradingView on phone.
+7. 3-step execution plan for TradingView on phone.
 """
 
   client = genai.Client(api_key=GEMINI_API_KEY)
@@ -163,6 +179,7 @@ If valid, formulate an ATR-sized trade card:
       send_discord_alert(
           title=f"🎯 [{session.upper()}] A+ TRADE SIGNAL",
           description=response.text,
+          asset_name=primary_asset,
           color=0x00FF88 if "BUY" in market_text else 0xFF3366,
       )
     else:
