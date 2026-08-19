@@ -1,0 +1,30 @@
+name: Automatic Market Scanner Alerts
+
+on:
+  schedule:
+    # Runs at minute 0 past every hour, Monday through Friday
+    - cron: '0 * * * 1-5'
+  workflow_dispatch: # Allows manual one-click testing anytime
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: |
+          pip install yfinance pandas requests google-genai
+
+      - name: Run Market Scanner
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          python scanner.py
