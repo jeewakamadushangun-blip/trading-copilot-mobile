@@ -177,23 +177,27 @@ with tab_radar:
       " USD/JPY, Gold)"
   )
 
-  default_key = st.secrets.get("GEMINI_API_KEY", "")
+  raw_secret_key = ""
+  if "GEMINI_API_KEY" in st.secrets:
+    raw_secret_key = str(st.secrets["GEMINI_API_KEY"]).strip().strip('"').strip("'")
 
-  api_key = st.text_input(
+  api_key_input = st.text_input(
       "Gemini API Key",
-      value=default_key,
+      value=raw_secret_key,
       type="password",
       placeholder="Paste your AI Studio API key...",
       help="Auto-loaded from Streamlit Secrets.",
   )
+
+  active_api_key = api_key_input.strip().strip('"').strip("'")
 
   account_balance = st.number_input(
       "Trading Capital ($)", min_value=10.0, value=100.0, step=10.0
   )
 
   if st.button("🚀 Scan All 4 Assets Simultaneously", use_container_width=True):
-    if not api_key:
-      st.error("Please provide your Gemini API Key above.")
+    if not active_api_key:
+      st.error("Please enter or verify your Gemini API Key above.")
     else:
       with st.spinner("Fetching parallel feeds & analyzing institutional setups..."):
         try:
@@ -220,43 +224,43 @@ with tab_radar:
             market_snapshot_text = ""
             for name, d in radar_data.items():
               market_snapshot_text += f"""
-                            ASSET: {name} ({d['symbol']})
-                            - Live Price: {d['price']:.5f}
-                            - 9 EMA: {d['ema9']:.5f} | 50 EMA: {d['ema50']:.5f}
-                            - 24h High: {d['high']:.5f} | 24h Low: {d['low']:.5f}
-                            - Structural Regime: {d['trend']}
-                            """
+ASSET: {name} ({d['symbol']})
+- Live Price: {d['price']:.5f}
+- 9 EMA: {d['ema9']:.5f} | 50 EMA: {d['ema50']:.5f}
+- 24h High: {d['high']:.5f} | 24h Low: {d['low']:.5f}
+- Structural Regime: {d['trend']}
+"""
 
             max_risk_cap = account_balance * 0.025
             prompt = f"""
-                        You are an elite Institutional Forex Screener and Risk Guardian.
-                        Analyze this synchronized 4-asset technical snapshot:
-                        {market_snapshot_text}
+You are an elite Institutional Forex Screener and Risk Guardian.
+Analyze this synchronized 4-asset technical snapshot:
+{market_snapshot_text}
 
-                        Trading Capital: ${account_balance:.2f} (Strict 1.5% to 2.5% max risk: Under ${max_risk_cap:.2f}).
-                        Position Sizing: 0.01 micro lot (1,000 units).
+Trading Capital: ${account_balance:.2f} (Strict 1.5% to 2.5% max risk: Under ${max_risk_cap:.2f}).
+Position Sizing: 0.01 micro lot (1,000 units).
 
-                        Output a clean report with these two sections:
+Output a clean report with these two sections:
 
-                        ## 1. WATCHLIST OPPORTUNITY RADAR
-                        Rank every asset with an Opportunity Grade:
-                        - **Grade A+ (Prime Pullback / High Probability)**
-                        - **Grade B (Secondary / Momentum Play)**
-                        - **No Trade (Consolidation, Choppy EMA, or Overextended)**
-                        Provide a 1-sentence technical justification for each.
+## 1. WATCHLIST OPPORTUNITY RADAR
+Rank every asset with an Opportunity Grade:
+- **Grade A+ (Prime Pullback / High Probability)**
+- **Grade B (Secondary / Momentum Play)**
+- **No Trade (Consolidation, Choppy EMA, or Overextended)**
+Provide a 1-sentence technical justification for each.
 
-                        ## 2. TOP ACTIONABLE BLUEPRINT CARD (Highest-Ranked Setup)
-                        Provide the full execution card for the top asset:
-                        - **Asset & Setup Direction**: (e.g. EUR/USD - BUY LIMIT)
-                        - **Recommended Entry Price**:
-                        - **Strict Stop Loss Price**: (State dollar loss under ${max_risk_cap:.2f})
-                        - **Take Profit Target Price**: (State dollar reward)
-                        - **Risk-to-Reward Ratio**: (Must exceed 1:1.5)
-                        - **Core Institutional Thesis**: (2 sentences on EMA support/resistance)
-                        - **15-Second Action Plan on TradingView**: (3 clean execution steps)
-                        """
+## 2. TOP ACTIONABLE BLUEPRINT CARD (Highest-Ranked Setup)
+Provide the full execution card for the top asset:
+- **Asset & Setup Direction**: (e.g. EUR/USD - BUY LIMIT)
+- **Recommended Entry Price**:
+- **Strict Stop Loss Price**: (State dollar loss under ${max_risk_cap:.2f})
+- **Take Profit Target Price**: (State dollar reward)
+- **Risk-to-Reward Ratio**: (Must exceed 1:1.5)
+- **Core Institutional Thesis**: (2 sentences on EMA support/resistance)
+- **15-Second Action Plan on TradingView**: (3 clean execution steps)
+"""
 
-            client = genai.Client(api_key=api_key)
+            client = genai.Client(api_key=active_api_key)
             models_to_try = [
                 "gemini-2.5-flash",
                 "gemini-2.0-flash",
@@ -264,15 +268,18 @@ with tab_radar:
                 "gemini-1.5-pro",
             ]
             blueprint_text = None
+            last_err = None
 
             for model_name in models_to_try:
               try:
                 response = client.models.generate_content(
                     model=model_name, contents=prompt
                 )
-                blueprint_text = response.text
-                break
-              except Exception:
+                if response.text:
+                  blueprint_text = response.text
+                  break
+              except Exception as e:
+                last_err = str(e)
                 continue
 
             if blueprint_text:
@@ -281,10 +288,7 @@ with tab_radar:
               st.success("Radar Scan Complete!")
               st.markdown(blueprint_text)
             else:
-              st.error(
-                  "Service busy across all model endpoints. Please retry in a"
-                  " moment."
-              )
+              st.error(f"API Error details: {last_err}")
 
         except Exception as e:
           st.error(f"Scan Error: {str(e)}")
