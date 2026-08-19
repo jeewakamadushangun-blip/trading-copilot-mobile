@@ -54,7 +54,7 @@ def send_discord_alert(title, description, asset_name, color=0x00FF88):
           "color": color,
           "footer": {
               "text": (
-                  f"Session: {session_name} • DXY Filter Active • Risk < 2.5%"
+                  f"Session: {session_name} • 4H-Trend Stacked • Risk < 2.5%"
               )
           },
       }],
@@ -111,65 +111,84 @@ def check_markets_strict():
   for name, symbol in ASSETS.items():
     try:
       ticker = yf.Ticker(symbol)
-      df = ticker.history(period="10d", interval="1h", timeout=10)
-      if df.empty or len(df) < 50:
+      df_1h = ticker.history(period="30d", interval="1h", timeout=10)
+      if df_1h.empty or len(df_1h) < 100:
         continue
 
-      df["EMA_9"] = df["Close"].ewm(span=9, adjust=False).mean()
-      df["EMA_50"] = df["Close"].ewm(span=50, adjust=False).mean()
-      df["EMA_200"] = df["Close"].ewm(span=200, adjust=False).mean()
-      df["RSI"] = compute_rsi(df["Close"])
-      df["ATR"] = compute_atr(df)
+      # 1. 1-Hour Indicators
+      df_1h["EMA_9"] = df_1h["Close"].ewm(span=9, adjust=False).mean()
+      df_1h["EMA_50"] = df_1h["Close"].ewm(span=50, adjust=False).mean()
+      df_1h["EMA_200"] = df_1h["Close"].ewm(span=200, adjust=False).mean()
+      df_1h["RSI"] = compute_rsi(df_1h["Close"])
+      df_1h["ATR"] = compute_atr(df_1h)
 
-      curr = df.iloc[-1]
-      price = curr["Close"]
-      ema9 = curr["EMA_9"]
-      ema50 = curr["EMA_50"]
-      ema200 = curr["EMA_200"]
-      rsi = curr["RSI"]
-      atr = curr["ATR"]
+      curr_1h = df_1h.iloc[-1]
+      price = curr_1h["Close"]
+      ema9_1h = curr_1h["EMA_9"]
+      ema50_1h = curr_1h["EMA_50"]
+      ema200_1h = curr_1h["EMA_200"]
+      rsi = curr_1h["RSI"]
+      atr = curr_1h["ATR"]
 
-      # Strict Technical Bounce Rules
-      is_bullish = (
-          price > ema200
-          and ema9 > ema50
+      # 2. 4-Hour Trend Calculation
+      df_4h = (
+          df_1h.resample("4h")
+          .agg({
+              "Open": "first",
+              "High": "max",
+              "Low": "min",
+              "Close": "last",
+              "Volume": "sum",
+          })
+          .dropna()
+      )
+      df_4h["EMA_50"] = df_4h["Close"].ewm(span=50, adjust=False).mean()
+      ema50_4h = df_4h["EMA_50"].iloc[-1]
+
+      is_4h_bullish = price > ema50_4h
+      is_4h_bearish = price < ema50_4h
+
+      # 3. 1H Setup & Strict 4H Trend Stacking
+      is_1h_bullish = (
+          price > ema200_1h
+          and ema9_1h > ema50_1h
           and 40 <= rsi <= 60
-          and curr["Low"] <= ema9 * 1.001
-          and curr["Close"] > ema9
+          and curr_1h["Low"] <= ema9_1h * 1.001
+          and curr_1h["Close"] > ema9_1h
       )
 
-      is_bearish = (
-          price < ema200
-          and ema9 < ema50
+      is_1h_bearish = (
+          price < ema200_1h
+          and ema9_1h < ema50_1h
           and 40 <= rsi <= 60
-          and curr["High"] >= ema9 * 0.999
-          and curr["Close"] < ema9
+          and curr_1h["High"] >= ema9_1h * 0.999
+          and curr_1h["Close"] < ema9_1h
       )
 
-      # DXY Correlation Filter Enforcement
-      # If DXY is BULLISH, block EUR/GBP/Gold Buys
-      if is_bullish:
+      # 4. Enforce Full Confluence: 1H + 4H + DXY
+      if is_1h_bullish and is_4h_bullish:
         if name in ["EUR/USD", "GBP/USD", "Gold / USD"] and dxy_bias == "BULLISH":
           print(f"Skipping {name} BUY: Blocked by Bullish DXY.")
           continue
         primary_asset = name
         confirmed_setups.append(f"""
-ASSET: {name} (BUY SETUP)
+ASSET: {name} (4H-STACKED BUY SETUP)
 - Live Price: {price:.5f} | 14 ATR: {atr:.5f} (1.5x SL Buffer: {1.5 * atr:.5f})
-- 9 EMA: {ema9:.5f} | 50 EMA: {ema50:.5f} | 200 EMA: {ema200:.5f}
+- 1H EMAs: 9 EMA: {ema9_1h:.5f} | 50 EMA: {ema50_1h:.5f} | 200 EMA: {ema200_1h:.5f}
+- 4H 50 EMA: {ema50_4h:.5f} (Bullish Macro Flow)
 - RSI: {rsi:.1f} | Macro DXY: {dxy_price:.2f} ({dxy_bias})
 """)
 
-      # If DXY is BEARISH, block EUR/GBP/Gold Sells and USD/JPY Buys
-      elif is_bearish:
+      elif is_1h_bearish and is_4h_bearish:
         if name in ["EUR/USD", "GBP/USD", "Gold / USD"] and dxy_bias == "BEARISH":
           print(f"Skipping {name} SELL: Blocked by Bearish DXY.")
           continue
         primary_asset = name
         confirmed_setups.append(f"""
-ASSET: {name} (SELL SETUP)
+ASSET: {name} (4H-STACKED SELL SETUP)
 - Live Price: {price:.5f} | 14 ATR: {atr:.5f} (1.5x SL Buffer: {1.5 * atr:.5f})
-- 9 EMA: {ema9:.5f} | 50 EMA: {ema50:.5f} | 200 EMA: {ema200:.5f}
+- 1H EMAs: 9 EMA: {ema9_1h:.5f} | 50 EMA: {ema50_1h:.5f} | 200 EMA: {ema200_1h:.5f}
+- 4H 50 EMA: {ema50_4h:.5f} (Bearish Macro Flow)
 - RSI: {rsi:.1f} | Macro DXY: {dxy_price:.2f} ({dxy_bias})
 """)
 
@@ -178,24 +197,24 @@ ASSET: {name} (SELL SETUP)
 
   if not confirmed_setups:
     print(
-        f"Zero setups passed strict DXY filter during {session}. System silent."
+        f"Zero setups passed 4H Trend Stacking during {session}. System silent."
     )
     return
 
   market_text = "\n".join(confirmed_setups)
   prompt = f"""
 You are an ultra-conservative FX Risk Guardian.
-Review these technically validated setups with DXY Macro alignment:
+Review these 4H-Trend Stacked setups:
 {market_text}
 
-Rule: If the setup lacks clean structure or contradicts DXY, reply ONLY with 'ABORT'.
+Rule: If the setup lacks multi-timeframe clean flow, reply ONLY with 'ABORT'.
 If valid, format an ATR-sized trade card:
 1. Setup: [Pair] [BUY/SELL LIMIT]
-2. Active Session: {session} (DXY: {dxy_bias})
+2. Active Session: {session}
 3. Recommended Entry Price:
 4. Dynamic ATR Stop Loss: (1.5x ATR buffer, dollar risk under $2.00 on $100 capital)
 5. Take Profit Target: (3.0x ATR buffer for 1:2 R:R)
-6. DXY Alignment Thesis: 1 sentence on why the Dollar Index confirms this direction.
+6. 4H Trend Alignment Thesis: 1 sentence on why the 4H trend confirms the 1H pullback.
 7. 3-step execution plan for TradingView on phone.
 """
 
@@ -206,7 +225,7 @@ If valid, format an ATR-sized trade card:
     )
     if "ABORT" not in response.text.upper():
       send_discord_alert(
-          title=f"🎯 [{session.upper()}] DXY-ALIGNED SIGNAL",
+          title=f"🎯 [{session.upper()}] 4H-STACKED SIGNAL",
           description=response.text,
           asset_name=primary_asset,
           color=0x00FF88 if "BUY" in market_text else 0xFF3366,
