@@ -25,6 +25,13 @@ ASSETS = {
     "Gold / USD": "GC=F",
 }
 
+TRADINGVIEW_SYMBOLS = {
+    "EUR/USD": "FX:EURUSD",
+    "GBP/USD": "FX:GBPUSD",
+    "USD/JPY": "FX:USDJPY",
+    "Gold / USD": "OANDA:XAUUSD",
+}
+
 
 # --- DATABASE LAYER (SQLite) ---
 def init_db():
@@ -189,11 +196,13 @@ tab_radar, tab_journal = st.tabs(
 )
 
 # ==========================================
-# TAB 1: RADAR WITH ATR STOP SIZING
+# TAB 1: RADAR WITH DEEP LINKS & ATR
 # ==========================================
 with tab_radar:
-  st.title("📡 Multi-Asset Radar & Dynamic ATR Sizing")
-  st.caption("Institutional 9/50/200 EMA Scanner + Volatility-Adjusted Stops")
+  st.title("📡 Multi-Asset Radar & Copilot")
+  st.caption(
+      "1-Hour Institutional EMA Strategy • Volatility Stops • 1-Click TradingView"
+  )
 
   raw_secret_key = ""
   if "GEMINI_API_KEY" in st.secrets:
@@ -224,7 +233,7 @@ with tab_radar:
           if len(radar_data) < 2:
             st.error("Unable to load live market feeds. Please retry.")
           else:
-            st.subheader("⚡ Live Market Structure & Volatility (ATR)")
+            st.subheader("⚡ Live Market Structure & Volatility")
             m_cols = st.columns(len(radar_data))
             for idx, (name, d) in enumerate(radar_data.items()):
               with m_cols[idx]:
@@ -233,13 +242,19 @@ with tab_radar:
                     value=f"{d['price']:.4f}",
                     delta=f"ATR: {d['atr']:.4f}",
                 )
+                tv_sym = TRADINGVIEW_SYMBOLS.get(name, "FX:EURUSD")
+                st.link_button(
+                    "📈 Chart",
+                    f"https://www.tradingview.com/chart/?symbol={tv_sym}&interval=60",
+                    use_container_width=True,
+                )
 
             market_snapshot_text = ""
             for name, d in radar_data.items():
               market_snapshot_text += f"""
 ASSET: {name} ({d['symbol']})
 - Live Price: {d['price']:.5f}
-- 14-period ATR: {d['atr']:.5f} (Recommended 1.5x SL Buffer: {1.5 * d['atr']:.5f})
+- 14-period ATR: {d['atr']:.5f} (1.5x SL Buffer: {1.5 * d['atr']:.5f})
 - 9 EMA: {d['ema9']:.5f} | 50 EMA: {d['ema50']:.5f} | 200 EMA: {d['ema200']:.5f}
 - 24h High: {d['high']:.5f} | 24h Low: {d['low']:.5f}
 - Structural Regime: {d['trend']}
@@ -261,7 +276,6 @@ Grade all 4 pairs:
 - **Grade A+ (Prime Pullback / High Probability)**
 - **Grade B (Secondary / Momentum Play)**
 - **No Trade (Consolidation or Choppy EMAs)**
-Include 1 short sentence on current ATR volatility conditions.
 
 ## 2. TOP ACTIONABLE BLUEPRINT CARD (Highest-Ranked Setup)
 Provide the execution plan using ATR-based stop placement:
@@ -271,7 +285,7 @@ Provide the execution plan using ATR-based stop placement:
 - **Take Profit Target Price**: (Calculated using 3.0x ATR buffer for 1:2 RRR)
 - **Risk-to-Reward Ratio**: (Target 1:2 minimum)
 - **Why This Trade Works**: (2 simple sentences on EMA bounce + ATR room)
-- **15-Second Action Plan on TradingView**: (3 clean steps)
+- **15-Second Action Plan on TradingView**: (3 clean execution steps)
 """
 
             client = genai.Client(api_key=active_api_key)
@@ -290,35 +304,46 @@ Provide the execution plan using ATR-based stop placement:
         except Exception as e:
           st.error(f"Scan Error: {str(e)}")
 
-  # Quick-Log Section
+  # Quick-Log Section with 1-Click TradingView Button
   if "radar_blueprint" in st.session_state:
     st.divider()
     st.subheader("📥 Quick Log Selected Setup to Journal")
+
+    log_asset = st.selectbox(
+        "Select Asset to Log or Chart", list(ASSETS.keys())
+    )
+    selected_tv_sym = TRADINGVIEW_SYMBOLS.get(log_asset, "FX:EURUSD")
+    tv_deep_link = f"https://www.tradingview.com/chart/?symbol={selected_tv_sym}&interval=60"
+
+    st.link_button(
+        f"📱 Open {log_asset} Directly in TradingView (1H)",
+        tv_deep_link,
+        use_container_width=True,
+    )
+
     with st.form("quick_log_form"):
-      c1, c2, c3 = st.columns(3)
+      c1, c2 = st.columns(2)
       with c1:
-        log_asset = st.selectbox("Asset", list(ASSETS.keys()))
         log_dir = st.selectbox(
             "Direction", ["BUY LIMIT", "SELL LIMIT", "BUY", "SELL"]
         )
-      with c2:
         default_entry = st.session_state["radar_data"][log_asset]["price"]
         log_entry = st.number_input(
             "Entry Price", value=float(default_entry), format="%.5f"
         )
+      with c2:
         log_sl = st.number_input("Stop Loss Price", value=0.0, format="%.5f")
-      with c3:
         log_tp = st.number_input("Take Profit Price", value=0.0, format="%.5f")
+
+      c3, c4 = st.columns(2)
+      with c3:
         log_risk = st.number_input(
             "Risk ($)", min_value=0.1, value=2.00, step=0.1
         )
-
-      c4, c5 = st.columns(2)
-      with c4:
         log_reward = st.number_input(
             "Target Reward ($)", min_value=0.1, value=4.00, step=0.1
         )
-      with c5:
+      with c4:
         log_notes = st.text_input(
             "Strategy Notes", value="ATR Volatility Sized Setup"
         )
@@ -340,10 +365,7 @@ Provide the execution plan using ATR-based stop placement:
             pnl=0.0,
             notes=log_notes,
         )
-        st.success(
-            f"Saved {log_asset} trade. Open the 'Trade Journal' tab to manage"
-            " it."
-        )
+        st.success(f"Saved {log_asset} trade to active database.")
 
 
 # ==========================================
@@ -412,6 +434,13 @@ with tab_journal:
           )
           if row["notes"]:
             st.caption(f"Strategy Notes: {row['notes']}")
+
+          row_tv = TRADINGVIEW_SYMBOLS.get(row["asset"], "FX:EURUSD")
+          st.link_button(
+              f"📱 Open {row['asset']} on TradingView",
+              f"https://www.tradingview.com/chart/?symbol={row_tv}&interval=60",
+              use_container_width=True,
+          )
 
           b1, b2, b3, b4 = st.columns(4)
           with b1:
