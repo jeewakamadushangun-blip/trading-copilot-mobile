@@ -9,7 +9,7 @@ from google import genai
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(
-    page_title="AI Multi-Asset Radar & DXY Copilot",
+    page_title="AI Multi-Asset Radar & 4H Trend Copilot",
     page_icon="📡",
     layout="centered",
     initial_sidebar_state="collapsed",
@@ -31,7 +31,6 @@ TRADINGVIEW_SYMBOLS = {
     "GBP/USD": "FX:GBPUSD",
     "USD/JPY": "FX:USDJPY",
     "Gold / USD": "OANDA:XAUUSD",
-    "US Dollar Index": "CAPITALCOM:DXY",
 }
 
 
@@ -116,7 +115,7 @@ def delete_trade(trade_id):
 init_db()
 
 
-# --- INDICATORS & MACRO DATA ---
+# --- INDICATORS & MULTI-TIMEFRAME RESAMPLING ---
 def compute_atr(df, period=14):
   high = df["High"]
   low = df["Low"]
@@ -143,71 +142,94 @@ def fetch_dxy_regime():
     if price > ema50 and ema9 > ema50:
       return {
           "price": price,
-          "trend": "BULLISH (Surging) 🟢",
+          "trend": "BULLISH 🟢",
           "bias": "FAVOR USD BUYS & EUR/GBP/GOLD SELLS",
-          "color": "red",
       }
     elif price < ema50 and ema9 < ema50:
       return {
           "price": price,
-          "trend": "BEARISH (Dumping) 🔴",
+          "trend": "BEARISH 🔴",
           "bias": "FAVOR EUR/GBP/GOLD BUYS & USD SELLS",
-          "color": "green",
       }
     else:
       return {
           "price": price,
           "trend": "CHOP / RANGE ⚪",
           "bias": "NEUTRAL RANGE",
-          "color": "gray",
       }
   except Exception:
-    return {
-        "price": 0.0,
-        "trend": "UNAVAILABLE",
-        "bias": "Standard",
-        "color": "gray",
-    }
+    return {"price": 0.0, "trend": "UNAVAILABLE", "bias": "Standard"}
 
 
 def fetch_single_asset(name, symbol):
   try:
     ticker = yf.Ticker(symbol)
-    df = ticker.history(period="10d", interval="1h", timeout=10)
-    if df.empty or len(df) < 50:
+    # Fetch 30 days of 1-hour data to build accurate 4-hour candles
+    df_1h = ticker.history(period="30d", interval="1h", timeout=10)
+    if df_1h.empty or len(df_1h) < 100:
       return None
 
-    df["EMA_9"] = df["Close"].ewm(span=9, adjust=False).mean()
-    df["EMA_50"] = df["Close"].ewm(span=50, adjust=False).mean()
-    df["EMA_200"] = df["Close"].ewm(span=200, adjust=False).mean()
-    df["ATR"] = compute_atr(df, period=14)
+    # 1. 1-Hour Indicators
+    df_1h["EMA_9"] = df_1h["Close"].ewm(span=9, adjust=False).mean()
+    df_1h["EMA_50"] = df_1h["Close"].ewm(span=50, adjust=False).mean()
+    df_1h["EMA_200"] = df_1h["Close"].ewm(span=200, adjust=False).mean()
+    df_1h["ATR"] = compute_atr(df_1h, period=14)
 
-    latest = df.iloc[-1]
-    current_price = latest["Close"]
-    ema9 = latest["EMA_9"]
-    ema50 = latest["EMA_50"]
-    ema200 = latest["EMA_200"]
-    atr = latest["ATR"]
+    latest_1h = df_1h.iloc[-1]
+    price = latest_1h["Close"]
+    ema9_1h = latest_1h["EMA_9"]
+    ema50_1h = latest_1h["EMA_50"]
+    ema200_1h = latest_1h["EMA_200"]
+    atr = latest_1h["ATR"]
 
-    trend = (
+    # 2. 4-Hour Resampling & 4H 50 EMA Calculation
+    df_4h = (
+        df_1h.resample("4h")
+        .agg({
+            "Open": "first",
+            "High": "max",
+            "Low": "min",
+            "Close": "last",
+            "Volume": "sum",
+        })
+        .dropna()
+    )
+
+    df_4h["EMA_50"] = df_4h["Close"].ewm(span=50, adjust=False).mean()
+    latest_4h = df_4h.iloc[-1]
+    ema50_4h = latest_4h["EMA_50"]
+    trend_4h = "BULLISH 🟢" if price > ema50_4h else "BEARISH 🔴"
+
+    trend_1h = (
         "BULLISH 🟢"
-        if current_price > ema50 and ema9 > ema50
+        if price > ema50_1h and ema9_1h > ema50_1h
         else (
             "BEARISH 🔴"
-            if current_price < ema50 and ema9 < ema50
-            else "NEUTRAL / CHOP ⚪"
+            if price < ema50_1h and ema9_1h < ema50_1h
+            else "CHOP ⚪"
         )
     )
+
+    # 3. Multi-Timeframe Alignment Status
+    if "BULLISH" in trend_1h and "BULLISH" in trend_4h:
+      mtf_status = "ALIGNED BULLISH 🚀"
+    elif "BEARISH" in trend_1h and "BEARISH" in trend_4h:
+      mtf_status = "ALIGNED BEARISH 📉"
+    else:
+      mtf_status = "CONFLICT / WAIT ⚠️"
 
     return {
         "asset": name,
         "symbol": symbol,
-        "price": current_price,
-        "ema9": ema9,
-        "ema50": ema50,
-        "ema200": ema200,
+        "price": price,
+        "ema9_1h": ema9_1h,
+        "ema50_1h": ema50_1h,
+        "ema200_1h": ema200_1h,
+        "ema50_4h": ema50_4h,
+        "trend_1h": trend_1h,
+        "trend_4h": trend_4h,
+        "mtf_status": mtf_status,
         "atr": atr,
-        "trend": trend,
     }
   except Exception:
     return None
@@ -233,11 +255,11 @@ tab_radar, tab_journal = st.tabs(
 )
 
 # ==========================================
-# TAB 1: RADAR WITH DXY DIRECTIONAL FILTER
+# TAB 1: RADAR WITH 4H TREND STACKING
 # ==========================================
 with tab_radar:
-  st.title("📡 Multi-Asset Radar & DXY Copilot")
-  st.caption("DXY Macro Trend Filter • 1.5x ATR Volatility Stops • 1-Hour EMAs")
+  st.title("📡 Multi-Asset Radar & 4H Copilot")
+  st.caption("4H Macro Trend Stacking • 1H Dynamic Pullbacks • DXY Shield")
 
   raw_secret_key = ""
   if "GEMINI_API_KEY" in st.secrets:
@@ -257,11 +279,15 @@ with tab_radar:
       "Trading Capital ($)", min_value=10.0, value=100.0, step=10.0
   )
 
-  if st.button("🚀 Scan All 4 Assets + DXY Filter", use_container_width=True):
+  if st.button(
+      "🚀 Scan 4 Assets + 4H Trend Stacking + DXY", use_container_width=True
+  ):
     if not active_api_key:
       st.error("Please enter your Gemini API Key above.")
     else:
-      with st.spinner("Checking DXY Dollar Index & running 4-asset scan..."):
+      with st.spinner(
+          "Synchronizing 4H macro trends, 1H pullbacks, and DXY regime..."
+      ):
         try:
           dxy_data = fetch_dxy_regime()
           radar_data = fetch_all_radar_data()
@@ -269,20 +295,23 @@ with tab_radar:
           if len(radar_data) < 2:
             st.error("Unable to load market feeds. Please retry.")
           else:
-            # Display DXY Macro Banner
             st.info(
                 f"💵 **Macro DXY Regime:** {dxy_data['price']:.2f} —"
                 f" {dxy_data['trend']} | **Bias:** {dxy_data['bias']}"
             )
 
-            st.subheader("⚡ Live Market Structure & Volatility")
+            st.subheader("⚡ Multi-Timeframe Alignment Matrix")
             m_cols = st.columns(len(radar_data))
             for idx, (name, d) in enumerate(radar_data.items()):
               with m_cols[idx]:
                 st.metric(
                     label=name,
                     value=f"{d['price']:.4f}",
-                    delta=f"ATR: {d['atr']:.4f}",
+                    delta=d["mtf_status"].split(" ")[0],
+                )
+                st.caption(
+                    f"1H: {d['trend_1h'].split(' ')[0]} | 4H:"
+                    f" {d['trend_4h'].split(' ')[0]}"
                 )
                 tv_sym = TRADINGVIEW_SYMBOLS.get(name, "FX:EURUSD")
                 st.link_button(
@@ -300,34 +329,35 @@ with tab_radar:
               market_snapshot_text += f"""
 ASSET: {name} ({d['symbol']})
 - Live Price: {d['price']:.5f} | 14 ATR: {d['atr']:.5f}
-- 9 EMA: {d['ema9']:.5f} | 50 EMA: {d['ema50']:.5f} | 200 EMA: {d['ema200']:.5f}
-- Structural Regime: {d['trend']}
+- 1-Hour: 9 EMA: {d['ema9_1h']:.5f} | 50 EMA: {d['ema50_1h']:.5f} | 200 EMA: {d['ema200_1h']:.5f} ({d['trend_1h']})
+- 4-Hour: 50 EMA: {d['ema50_4h']:.5f} ({d['trend_4h']})
+- Multi-Timeframe Status: {d['mtf_status']}
 """
 
             max_risk_cap = account_balance * 0.025
             prompt = f"""
-You are an institutional FX Risk Guardian.
-Review this 4-asset technical snapshot with Macro DXY Index correlation:
+You are an elite Institutional FX Risk Guardian.
+Analyze this multi-timeframe 4-asset technical snapshot with 4-Hour Trend Stacking and DXY correlation:
 {market_snapshot_text}
 
-Account Capital: ${account_balance:.2f} (Strict max loss: Under ${max_risk_cap:.2f}).
+Account Capital: ${account_balance:.2f} (Max Risk: Under ${max_risk_cap:.2f}).
 Position Sizing: 0.01 micro lot (1,000 units).
 
-STRICT DXY FILTER RULES:
-- If DXY is BULLISH: Reject all Buys on EUR/USD, GBP/USD, Gold. Only permit Sells on EUR/USD, GBP/USD, Gold, or Buys on USD/JPY.
-- If DXY is BEARISH: Reject all Sells on EUR/USD, GBP/USD, Gold. Only permit Buys on EUR/USD, GBP/USD, Gold, or Sells on USD/JPY.
+STRICT 4H TREND STACKING RULES:
+- ONLY allow BUY setups if 1-Hour is Bullish AND 4-Hour is Bullish (Price > 4H 50 EMA).
+- ONLY allow SELL setups if 1-Hour is Bearish AND 4-Hour is Bearish (Price < 4H 50 EMA).
+- Reject any pair where 1H and 4H are in conflict (MTF Status: CONFLICT / WAIT).
 
 Output:
 ## 1. WATCHLIST OPPORTUNITY RADAR
-Rank all 4 pairs with Opportunity Grade and state whether DXY correlation supports the direction.
+Rank all 4 pairs. State whether 4H and 1H trends agree.
 
-## 2. TOP ACTIONABLE BLUEPRINT CARD (Highest-Ranked Setup)
-- **Asset & Order Type**: (e.g. EUR/USD - SELL LIMIT)
+## 2. TOP ACTIONABLE BLUEPRINT CARD (Strictly 4H-Aligned Setup)
+- **Asset & Order Type**: (e.g. EUR/USD - BUY LIMIT)
 - **Recommended Entry Price**:
-- **Dynamic ATR Stop Loss Price**: (1.5x ATR buffer, dollar loss under ${max_risk_cap:.2f})
+- **Dynamic ATR Stop Loss Price**: (1.5x ATR buffer, dollar risk under ${max_risk_cap:.2f})
 - **Take Profit Target Price**: (3.0x ATR buffer for 1:2 RRR)
-- **Risk-to-Reward Ratio**: (1:2 minimum)
-- **DXY Confluence Thesis**: (2 sentences on why DXY trend confirms this setup)
+- **4H + 1H Alignment Thesis**: (2 sentences on 4H trend + 1H 9 EMA bounce confirmation)
 - **15-Second Action Plan on TradingView**: (3 clean execution steps)
 """
 
@@ -339,7 +369,7 @@ Rank all 4 pairs with Opportunity Grade and state whether DXY correlation suppor
             if response.text:
               st.session_state["radar_blueprint"] = response.text
               st.session_state["radar_data"] = radar_data
-              st.success("DXY Filter Scan Complete!")
+              st.success("4H Trend Stacking Scan Complete!")
               st.markdown(response.text)
             else:
               st.error("Failed to generate trade blueprint. Please retry.")
@@ -388,7 +418,7 @@ Rank all 4 pairs with Opportunity Grade and state whether DXY correlation suppor
         )
       with c4:
         log_notes = st.text_input(
-            "Strategy Notes", value="DXY Aligned ATR Setup"
+            "Strategy Notes", value="4H-Stacked ATR Setup"
         )
 
       if st.form_submit_button(
