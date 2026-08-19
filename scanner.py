@@ -12,6 +12,8 @@ ASSETS = {
     "Gold / USD": "GC=F",
 }
 
+DXY_SYMBOL = "DX-Y.NYB"
+
 TRADINGVIEW_SYMBOLS = {
     "EUR/USD": "FX:EURUSD",
     "GBP/USD": "FX:GBPUSD",
@@ -52,7 +54,7 @@ def send_discord_alert(title, description, asset_name, color=0x00FF88):
           "color": color,
           "footer": {
               "text": (
-                  f"Session: {session_name} • 1.5x ATR Stops • Risk < 2.5%"
+                  f"Session: {session_name} • DXY Filter Active • Risk < 2.5%"
               )
           },
       }],
@@ -79,8 +81,30 @@ def compute_atr(df, period=14):
   return tr.rolling(window=period).mean()
 
 
+def fetch_dxy_bias():
+  try:
+    ticker = yf.Ticker(DXY_SYMBOL)
+    df = ticker.history(period="10d", interval="1h", timeout=10)
+    if df.empty or len(df) < 50:
+      return "NEUTRAL", 0.0
+    df["EMA_9"] = df["Close"].ewm(span=9, adjust=False).mean()
+    df["EMA_50"] = df["Close"].ewm(span=50, adjust=False).mean()
+    price = df["Close"].iloc[-1]
+    ema9 = df["EMA_9"].iloc[-1]
+    ema50 = df["EMA_50"].iloc[-1]
+
+    if price > ema50 and ema9 > ema50:
+      return "BULLISH", price
+    elif price < ema50 and ema9 < ema50:
+      return "BEARISH", price
+    return "NEUTRAL", price
+  except Exception:
+    return "NEUTRAL", 0.0
+
+
 def check_markets_strict():
   session = get_current_session()
+  dxy_bias, dxy_price = fetch_dxy_bias()
   confirmed_setups = []
   primary_asset = "EUR/USD"
 
@@ -105,7 +129,7 @@ def check_markets_strict():
       rsi = curr["RSI"]
       atr = curr["ATR"]
 
-      # Strict Confluence Conditions
+      # Strict Technical Bounce Rules
       is_bullish = (
           price > ema200
           and ema9 > ema50
@@ -122,25 +146,31 @@ def check_markets_strict():
           and curr["Close"] < ema9
       )
 
+      # DXY Correlation Filter Enforcement
+      # If DXY is BULLISH, block EUR/GBP/Gold Buys
       if is_bullish:
+        if name in ["EUR/USD", "GBP/USD", "Gold / USD"] and dxy_bias == "BULLISH":
+          print(f"Skipping {name} BUY: Blocked by Bullish DXY.")
+          continue
         primary_asset = name
         confirmed_setups.append(f"""
 ASSET: {name} (BUY SETUP)
-- Live Price: {price:.5f}
-- 14 ATR: {atr:.5f} (1.5x ATR Stop Buffer: {1.5 * atr:.5f})
+- Live Price: {price:.5f} | 14 ATR: {atr:.5f} (1.5x SL Buffer: {1.5 * atr:.5f})
 - 9 EMA: {ema9:.5f} | 50 EMA: {ema50:.5f} | 200 EMA: {ema200:.5f}
-- RSI (14): {rsi:.1f}
-- Dynamic 9 EMA rejection confirmed.
+- RSI: {rsi:.1f} | Macro DXY: {dxy_price:.2f} ({dxy_bias})
 """)
+
+      # If DXY is BEARISH, block EUR/GBP/Gold Sells and USD/JPY Buys
       elif is_bearish:
+        if name in ["EUR/USD", "GBP/USD", "Gold / USD"] and dxy_bias == "BEARISH":
+          print(f"Skipping {name} SELL: Blocked by Bearish DXY.")
+          continue
         primary_asset = name
         confirmed_setups.append(f"""
 ASSET: {name} (SELL SETUP)
-- Live Price: {price:.5f}
-- 14 ATR: {atr:.5f} (1.5x ATR Stop Buffer: {1.5 * atr:.5f})
+- Live Price: {price:.5f} | 14 ATR: {atr:.5f} (1.5x SL Buffer: {1.5 * atr:.5f})
 - 9 EMA: {ema9:.5f} | 50 EMA: {ema50:.5f} | 200 EMA: {ema200:.5f}
-- RSI (14): {rsi:.1f}
-- Dynamic 9 EMA rejection confirmed.
+- RSI: {rsi:.1f} | Macro DXY: {dxy_price:.2f} ({dxy_bias})
 """)
 
     except Exception as e:
@@ -148,25 +178,24 @@ ASSET: {name} (SELL SETUP)
 
   if not confirmed_setups:
     print(
-        f"Zero setups matched strict ATR confluence during {session}. System"
-        " silent."
+        f"Zero setups passed strict DXY filter during {session}. System silent."
     )
     return
 
   market_text = "\n".join(confirmed_setups)
   prompt = f"""
-You are an ultra-conservative institutional risk manager.
-Review these technically validated setups detected during {session}:
+You are an ultra-conservative FX Risk Guardian.
+Review these technically validated setups with DXY Macro alignment:
 {market_text}
 
-Rule: If the setup lacks clean structure, reply ONLY with 'ABORT'.
-If valid, formulate an ATR-sized trade card:
+Rule: If the setup lacks clean structure or contradicts DXY, reply ONLY with 'ABORT'.
+If valid, format an ATR-sized trade card:
 1. Setup: [Pair] [BUY/SELL LIMIT]
-2. Active Session: {session}
+2. Active Session: {session} (DXY: {dxy_bias})
 3. Recommended Entry Price:
-4. Dynamic ATR Stop Loss: (1.5x ATR buffer, dollar risk strictly under $2.00 on $100 capital)
+4. Dynamic ATR Stop Loss: (1.5x ATR buffer, dollar risk under $2.00 on $100 capital)
 5. Take Profit Target: (3.0x ATR buffer for 1:2 R:R)
-6. Simple Thesis: 1 sentence on session momentum + EMA bounce.
+6. DXY Alignment Thesis: 1 sentence on why the Dollar Index confirms this direction.
 7. 3-step execution plan for TradingView on phone.
 """
 
@@ -177,7 +206,7 @@ If valid, formulate an ATR-sized trade card:
     )
     if "ABORT" not in response.text.upper():
       send_discord_alert(
-          title=f"🎯 [{session.upper()}] A+ TRADE SIGNAL",
+          title=f"🎯 [{session.upper()}] DXY-ALIGNED SIGNAL",
           description=response.text,
           asset_name=primary_asset,
           color=0x00FF88 if "BUY" in market_text else 0xFF3366,
