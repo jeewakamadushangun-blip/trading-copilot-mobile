@@ -2,6 +2,7 @@ import concurrent.futures
 from datetime import datetime
 import os
 import sqlite3
+import numpy as np
 import pandas as pd
 import streamlit as st
 import yfinance as yf
@@ -9,7 +10,7 @@ from google import genai
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(
-    page_title="AI Multi-Asset Radar & Copilot",
+    page_title="AI Multi-Asset Radar & ATR Copilot",
     page_icon="📡",
     layout="centered",
     initial_sidebar_state="collapsed",
@@ -106,21 +107,39 @@ def delete_trade(trade_id):
 init_db()
 
 
-# --- PARALLEL MARKET DATA FETCHER ---
+# --- INDICATOR FUNCTIONS ---
+def compute_atr(df, period=14):
+  high = df["High"]
+  low = df["Low"]
+  close = df["Close"].shift(1)
+
+  tr1 = high - low
+  tr2 = (high - close).abs()
+  tr3 = (low - close).abs()
+
+  tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+  return tr.rolling(window=period).mean()
+
+
 def fetch_single_asset(name, symbol):
   try:
     ticker = yf.Ticker(symbol)
-    df = ticker.history(period="5d", interval="1h", timeout=10)
-    if df.empty or len(df) < 30:
+    df = ticker.history(period="10d", interval="1h", timeout=10)
+    if df.empty or len(df) < 50:
       return None
 
     df["EMA_9"] = df["Close"].ewm(span=9, adjust=False).mean()
     df["EMA_50"] = df["Close"].ewm(span=50, adjust=False).mean()
+    df["EMA_200"] = df["Close"].ewm(span=200, adjust=False).mean()
+    df["ATR"] = compute_atr(df, period=14)
 
     latest = df.iloc[-1]
     current_price = latest["Close"]
     ema9 = latest["EMA_9"]
     ema50 = latest["EMA_50"]
+    ema200 = latest["EMA_200"]
+    atr = latest["ATR"]
+
     session_high = df["High"].tail(24).max()
     session_low = df["Low"].tail(24).min()
 
@@ -140,6 +159,8 @@ def fetch_single_asset(name, symbol):
         "price": current_price,
         "ema9": ema9,
         "ema50": ema50,
+        "ema200": ema200,
+        "atr": atr,
         "high": session_high,
         "low": session_low,
         "trend": trend,
@@ -168,14 +189,11 @@ tab_radar, tab_journal = st.tabs(
 )
 
 # ==========================================
-# TAB 1: MULTI-ASSET RADAR & OPPORTUNITY SCAN
+# TAB 1: RADAR WITH ATR STOP SIZING
 # ==========================================
 with tab_radar:
-  st.title("📡 Institutional Multi-Asset Radar")
-  st.caption(
-      "Parallel Market Scanner & AI Opportunity Screener (EUR/USD, GBP/USD,"
-      " USD/JPY, Gold)"
-  )
+  st.title("📡 Multi-Asset Radar & Dynamic ATR Sizing")
+  st.caption("Institutional 9/50/200 EMA Scanner + Volatility-Adjusted Stops")
 
   raw_secret_key = ""
   if "GEMINI_API_KEY" in st.secrets:
@@ -188,107 +206,86 @@ with tab_radar:
       value=raw_secret_key,
       type="password",
       placeholder="Paste your AI Studio API key...",
-      help="Auto-loaded from Streamlit Secrets.",
   )
 
   active_api_key = api_key_input.strip().strip('"').strip("'")
-
   account_balance = st.number_input(
       "Trading Capital ($)", min_value=10.0, value=100.0, step=10.0
   )
 
   if st.button("🚀 Scan All 4 Assets Simultaneously", use_container_width=True):
     if not active_api_key:
-      st.error("Please enter or verify your Gemini API Key above.")
+      st.error("Please enter your Gemini API Key above.")
     else:
-      with st.spinner("Fetching parallel feeds & analyzing institutional setups..."):
+      with st.spinner("Analyzing parallel data & computing ATR volatility..."):
         try:
           radar_data = fetch_all_radar_data()
 
           if len(radar_data) < 2:
-            st.error(
-                "Unable to fetch live feeds. Check internet connectivity and"
-                " retry."
-            )
+            st.error("Unable to load live market feeds. Please retry.")
           else:
-            # 1. Display Quick Metric Overview
-            st.subheader("⚡ Live Market Structure Snapshot")
+            st.subheader("⚡ Live Market Structure & Volatility (ATR)")
             m_cols = st.columns(len(radar_data))
             for idx, (name, d) in enumerate(radar_data.items()):
               with m_cols[idx]:
                 st.metric(
                     label=name,
                     value=f"{d['price']:.4f}",
-                    delta=d["trend"].split(" ")[0],
+                    delta=f"ATR: {d['atr']:.4f}",
                 )
 
-            # 2. Build AI Prompt Context
             market_snapshot_text = ""
             for name, d in radar_data.items():
               market_snapshot_text += f"""
 ASSET: {name} ({d['symbol']})
 - Live Price: {d['price']:.5f}
-- 9 EMA: {d['ema9']:.5f} | 50 EMA: {d['ema50']:.5f}
+- 14-period ATR: {d['atr']:.5f} (Recommended 1.5x SL Buffer: {1.5 * d['atr']:.5f})
+- 9 EMA: {d['ema9']:.5f} | 50 EMA: {d['ema50']:.5f} | 200 EMA: {d['ema200']:.5f}
 - 24h High: {d['high']:.5f} | 24h Low: {d['low']:.5f}
 - Structural Regime: {d['trend']}
 """
 
             max_risk_cap = account_balance * 0.025
             prompt = f"""
-You are an elite Institutional Forex Screener and Risk Guardian.
-Analyze this synchronized 4-asset technical snapshot:
+You are an expert Forex Risk Guardian.
+Analyze this live 4-asset technical snapshot with 14-period ATR volatility data:
 {market_snapshot_text}
 
-Trading Capital: ${account_balance:.2f} (Strict 1.5% to 2.5% max risk: Under ${max_risk_cap:.2f}).
+Account Capital: ${account_balance:.2f} (Strict max loss: Under ${max_risk_cap:.2f}).
 Position Sizing: 0.01 micro lot (1,000 units).
 
-Output a clean report with these two sections:
+Generate a clear execution guide:
 
 ## 1. WATCHLIST OPPORTUNITY RADAR
-Rank every asset with an Opportunity Grade:
+Grade all 4 pairs:
 - **Grade A+ (Prime Pullback / High Probability)**
 - **Grade B (Secondary / Momentum Play)**
-- **No Trade (Consolidation, Choppy EMA, or Overextended)**
-Provide a 1-sentence technical justification for each.
+- **No Trade (Consolidation or Choppy EMAs)**
+Include 1 short sentence on current ATR volatility conditions.
 
 ## 2. TOP ACTIONABLE BLUEPRINT CARD (Highest-Ranked Setup)
-Provide the full execution card for the top asset:
-- **Asset & Setup Direction**: (e.g. EUR/USD - BUY LIMIT)
+Provide the execution plan using ATR-based stop placement:
+- **Asset & Order Type**: (e.g. EUR/USD - BUY LIMIT)
 - **Recommended Entry Price**:
-- **Strict Stop Loss Price**: (State dollar loss under ${max_risk_cap:.2f})
-- **Take Profit Target Price**: (State dollar reward)
-- **Risk-to-Reward Ratio**: (Must exceed 1:1.5)
-- **Core Institutional Thesis**: (2 sentences on EMA support/resistance)
-- **15-Second Action Plan on TradingView**: (3 clean execution steps)
+- **Dynamic ATR Stop Loss Price**: (Calculated using 1.5x ATR buffer, state dollar loss under ${max_risk_cap:.2f})
+- **Take Profit Target Price**: (Calculated using 3.0x ATR buffer for 1:2 RRR)
+- **Risk-to-Reward Ratio**: (Target 1:2 minimum)
+- **Why This Trade Works**: (2 simple sentences on EMA bounce + ATR room)
+- **15-Second Action Plan on TradingView**: (3 clean steps)
 """
 
             client = genai.Client(api_key=active_api_key)
-            models_to_try = [
-                "gemini-3.6-flash",
-                "gemini-3.6-pro",
-            ]
-            blueprint_text = None
-            error_messages = []
+            response = client.models.generate_content(
+                model="gemini-3.6-flash", contents=prompt
+            )
 
-            for model_name in models_to_try:
-              try:
-                response = client.models.generate_content(
-                    model=model_name, contents=prompt
-                )
-                if response.text:
-                  blueprint_text = response.text
-                  break
-              except Exception as e:
-                error_messages.append(f"{model_name}: {str(e)}")
-                continue
-
-            if blueprint_text:
-              st.session_state["radar_blueprint"] = blueprint_text
+            if response.text:
+              st.session_state["radar_blueprint"] = response.text
               st.session_state["radar_data"] = radar_data
-              st.success("Radar Scan Complete!")
-              st.markdown(blueprint_text)
+              st.success("ATR Volatility Scan Complete!")
+              st.markdown(response.text)
             else:
-              st.error("API Errors: " + " | ".join(error_messages))
+              st.error("Failed to generate trade blueprint. Please retry.")
 
         except Exception as e:
           st.error(f"Scan Error: {str(e)}")
@@ -323,7 +320,7 @@ Provide the full execution card for the top asset:
         )
       with c5:
         log_notes = st.text_input(
-            "Strategy Notes", value="Multi-Asset Radar A+ Setup"
+            "Strategy Notes", value="ATR Volatility Sized Setup"
         )
 
       if st.form_submit_button(
