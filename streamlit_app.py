@@ -2,7 +2,6 @@ import concurrent.futures
 from datetime import datetime
 import os
 import sqlite3
-import numpy as np
 import pandas as pd
 import streamlit as st
 import yfinance as yf
@@ -10,7 +9,7 @@ from google import genai
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(
-    page_title="AI Multi-Asset Radar & ATR Copilot",
+    page_title="AI Multi-Asset Radar & DXY Copilot",
     page_icon="📡",
     layout="centered",
     initial_sidebar_state="collapsed",
@@ -25,15 +24,18 @@ ASSETS = {
     "Gold / USD": "GC=F",
 }
 
+DXY_SYMBOL = "DX-Y.NYB"
+
 TRADINGVIEW_SYMBOLS = {
     "EUR/USD": "FX:EURUSD",
     "GBP/USD": "FX:GBPUSD",
     "USD/JPY": "FX:USDJPY",
     "Gold / USD": "OANDA:XAUUSD",
+    "US Dollar Index": "CAPITALCOM:DXY",
 }
 
 
-# --- DATABASE LAYER (SQLite) ---
+# --- DATABASE LAYER ---
 def init_db():
   conn = sqlite3.connect(DB_FILE)
   cursor = conn.cursor()
@@ -114,18 +116,58 @@ def delete_trade(trade_id):
 init_db()
 
 
-# --- INDICATOR FUNCTIONS ---
+# --- INDICATORS & MACRO DATA ---
 def compute_atr(df, period=14):
   high = df["High"]
   low = df["Low"]
   close = df["Close"].shift(1)
-
   tr1 = high - low
   tr2 = (high - close).abs()
   tr3 = (low - close).abs()
-
   tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
   return tr.rolling(window=period).mean()
+
+
+def fetch_dxy_regime():
+  try:
+    ticker = yf.Ticker(DXY_SYMBOL)
+    df = ticker.history(period="10d", interval="1h", timeout=10)
+    if df.empty or len(df) < 50:
+      return {"price": 0.0, "trend": "NEUTRAL", "bias": "No Bias"}
+    df["EMA_9"] = df["Close"].ewm(span=9, adjust=False).mean()
+    df["EMA_50"] = df["Close"].ewm(span=50, adjust=False).mean()
+    price = df["Close"].iloc[-1]
+    ema9 = df["EMA_9"].iloc[-1]
+    ema50 = df["EMA_50"].iloc[-1]
+
+    if price > ema50 and ema9 > ema50:
+      return {
+          "price": price,
+          "trend": "BULLISH (Surging) 🟢",
+          "bias": "FAVOR USD BUYS & EUR/GBP/GOLD SELLS",
+          "color": "red",
+      }
+    elif price < ema50 and ema9 < ema50:
+      return {
+          "price": price,
+          "trend": "BEARISH (Dumping) 🔴",
+          "bias": "FAVOR EUR/GBP/GOLD BUYS & USD SELLS",
+          "color": "green",
+      }
+    else:
+      return {
+          "price": price,
+          "trend": "CHOP / RANGE ⚪",
+          "bias": "NEUTRAL RANGE",
+          "color": "gray",
+      }
+  except Exception:
+    return {
+        "price": 0.0,
+        "trend": "UNAVAILABLE",
+        "bias": "Standard",
+        "color": "gray",
+    }
 
 
 def fetch_single_asset(name, symbol):
@@ -147,9 +189,6 @@ def fetch_single_asset(name, symbol):
     ema200 = latest["EMA_200"]
     atr = latest["ATR"]
 
-    session_high = df["High"].tail(24).max()
-    session_low = df["Low"].tail(24).min()
-
     trend = (
         "BULLISH 🟢"
         if current_price > ema50 and ema9 > ema50
@@ -168,8 +207,6 @@ def fetch_single_asset(name, symbol):
         "ema50": ema50,
         "ema200": ema200,
         "atr": atr,
-        "high": session_high,
-        "low": session_low,
         "trend": trend,
     }
   except Exception:
@@ -196,13 +233,11 @@ tab_radar, tab_journal = st.tabs(
 )
 
 # ==========================================
-# TAB 1: RADAR WITH DEEP LINKS & ATR
+# TAB 1: RADAR WITH DXY DIRECTIONAL FILTER
 # ==========================================
 with tab_radar:
-  st.title("📡 Multi-Asset Radar & Copilot")
-  st.caption(
-      "1-Hour Institutional EMA Strategy • Volatility Stops • 1-Click TradingView"
-  )
+  st.title("📡 Multi-Asset Radar & DXY Copilot")
+  st.caption("DXY Macro Trend Filter • 1.5x ATR Volatility Stops • 1-Hour EMAs")
 
   raw_secret_key = ""
   if "GEMINI_API_KEY" in st.secrets:
@@ -222,17 +257,24 @@ with tab_radar:
       "Trading Capital ($)", min_value=10.0, value=100.0, step=10.0
   )
 
-  if st.button("🚀 Scan All 4 Assets Simultaneously", use_container_width=True):
+  if st.button("🚀 Scan All 4 Assets + DXY Filter", use_container_width=True):
     if not active_api_key:
       st.error("Please enter your Gemini API Key above.")
     else:
-      with st.spinner("Analyzing parallel data & computing ATR volatility..."):
+      with st.spinner("Checking DXY Dollar Index & running 4-asset scan..."):
         try:
+          dxy_data = fetch_dxy_regime()
           radar_data = fetch_all_radar_data()
 
           if len(radar_data) < 2:
-            st.error("Unable to load live market feeds. Please retry.")
+            st.error("Unable to load market feeds. Please retry.")
           else:
+            # Display DXY Macro Banner
+            st.info(
+                f"💵 **Macro DXY Regime:** {dxy_data['price']:.2f} —"
+                f" {dxy_data['trend']} | **Bias:** {dxy_data['bias']}"
+            )
+
             st.subheader("⚡ Live Market Structure & Volatility")
             m_cols = st.columns(len(radar_data))
             for idx, (name, d) in enumerate(radar_data.items()):
@@ -249,42 +291,43 @@ with tab_radar:
                     use_container_width=True,
                 )
 
-            market_snapshot_text = ""
+            market_snapshot_text = (
+                f"MACRO US DOLLAR INDEX (DXY): {dxy_data['price']:.3f} |"
+                f" Regime: {dxy_data['trend']} | Recommended Bias:"
+                f" {dxy_data['bias']}\n"
+            )
             for name, d in radar_data.items():
               market_snapshot_text += f"""
 ASSET: {name} ({d['symbol']})
-- Live Price: {d['price']:.5f}
-- 14-period ATR: {d['atr']:.5f} (1.5x SL Buffer: {1.5 * d['atr']:.5f})
+- Live Price: {d['price']:.5f} | 14 ATR: {d['atr']:.5f}
 - 9 EMA: {d['ema9']:.5f} | 50 EMA: {d['ema50']:.5f} | 200 EMA: {d['ema200']:.5f}
-- 24h High: {d['high']:.5f} | 24h Low: {d['low']:.5f}
 - Structural Regime: {d['trend']}
 """
 
             max_risk_cap = account_balance * 0.025
             prompt = f"""
-You are an expert Forex Risk Guardian.
-Analyze this live 4-asset technical snapshot with 14-period ATR volatility data:
+You are an institutional FX Risk Guardian.
+Review this 4-asset technical snapshot with Macro DXY Index correlation:
 {market_snapshot_text}
 
 Account Capital: ${account_balance:.2f} (Strict max loss: Under ${max_risk_cap:.2f}).
 Position Sizing: 0.01 micro lot (1,000 units).
 
-Generate a clear execution guide:
+STRICT DXY FILTER RULES:
+- If DXY is BULLISH: Reject all Buys on EUR/USD, GBP/USD, Gold. Only permit Sells on EUR/USD, GBP/USD, Gold, or Buys on USD/JPY.
+- If DXY is BEARISH: Reject all Sells on EUR/USD, GBP/USD, Gold. Only permit Buys on EUR/USD, GBP/USD, Gold, or Sells on USD/JPY.
 
+Output:
 ## 1. WATCHLIST OPPORTUNITY RADAR
-Grade all 4 pairs:
-- **Grade A+ (Prime Pullback / High Probability)**
-- **Grade B (Secondary / Momentum Play)**
-- **No Trade (Consolidation or Choppy EMAs)**
+Rank all 4 pairs with Opportunity Grade and state whether DXY correlation supports the direction.
 
 ## 2. TOP ACTIONABLE BLUEPRINT CARD (Highest-Ranked Setup)
-Provide the execution plan using ATR-based stop placement:
-- **Asset & Order Type**: (e.g. EUR/USD - BUY LIMIT)
+- **Asset & Order Type**: (e.g. EUR/USD - SELL LIMIT)
 - **Recommended Entry Price**:
-- **Dynamic ATR Stop Loss Price**: (Calculated using 1.5x ATR buffer, state dollar loss under ${max_risk_cap:.2f})
-- **Take Profit Target Price**: (Calculated using 3.0x ATR buffer for 1:2 RRR)
-- **Risk-to-Reward Ratio**: (Target 1:2 minimum)
-- **Why This Trade Works**: (2 simple sentences on EMA bounce + ATR room)
+- **Dynamic ATR Stop Loss Price**: (1.5x ATR buffer, dollar loss under ${max_risk_cap:.2f})
+- **Take Profit Target Price**: (3.0x ATR buffer for 1:2 RRR)
+- **Risk-to-Reward Ratio**: (1:2 minimum)
+- **DXY Confluence Thesis**: (2 sentences on why DXY trend confirms this setup)
 - **15-Second Action Plan on TradingView**: (3 clean execution steps)
 """
 
@@ -296,7 +339,7 @@ Provide the execution plan using ATR-based stop placement:
             if response.text:
               st.session_state["radar_blueprint"] = response.text
               st.session_state["radar_data"] = radar_data
-              st.success("ATR Volatility Scan Complete!")
+              st.success("DXY Filter Scan Complete!")
               st.markdown(response.text)
             else:
               st.error("Failed to generate trade blueprint. Please retry.")
@@ -304,7 +347,7 @@ Provide the execution plan using ATR-based stop placement:
         except Exception as e:
           st.error(f"Scan Error: {str(e)}")
 
-  # Quick-Log Section with 1-Click TradingView Button
+  # Quick-Log Section
   if "radar_blueprint" in st.session_state:
     st.divider()
     st.subheader("📥 Quick Log Selected Setup to Journal")
@@ -345,7 +388,7 @@ Provide the execution plan using ATR-based stop placement:
         )
       with c4:
         log_notes = st.text_input(
-            "Strategy Notes", value="ATR Volatility Sized Setup"
+            "Strategy Notes", value="DXY Aligned ATR Setup"
         )
 
       if st.form_submit_button(
