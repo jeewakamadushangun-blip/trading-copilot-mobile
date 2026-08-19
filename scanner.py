@@ -93,7 +93,7 @@ def check_markets():
   client = genai.Client(api_key=GEMINI_API_KEY)
   try:
     response = client.models.generate_content(
-        model="gemini-2.0-flash", contents=prompt
+        model="gemini-3.6-flash", contents=prompt
     )
     alert_text = response.text
     send_discord_alert(
