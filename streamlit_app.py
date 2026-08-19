@@ -4,7 +4,6 @@ import streamlit as st
 import yfinance as yf
 from google import genai
 
-# Mobile page layout configuration
 st.set_page_config(
     page_title="AI Trading Copilot",
     page_icon="📈",
@@ -15,15 +14,21 @@ st.set_page_config(
 st.title("📈 AI Trading Copilot")
 st.caption("Institutional Market Scanner & Risk Guardian")
 
-# 1. API Key Input
+# 1. Check for Cloud Secret / Default Key
+default_key = ""
+if "GEMINI_API_KEY" in st.secrets:
+  default_key = st.secrets["GEMINI_API_KEY"]
+
+# 2. API Key Input Box (Auto-filled if Secret is set)
 api_key = st.text_input(
     "Gemini API Key",
+    value=default_key,
     type="password",
     placeholder="Paste your AI Studio API key...",
-    help="Your key is not stored or shared.",
+    help="Your key is securely managed via Streamlit Secrets.",
 )
 
-# 2. Controls
+# 3. Asset & Capital Controls
 col1, col2 = st.columns(2)
 with col1:
   pair_choice = st.selectbox(
@@ -40,16 +45,18 @@ with col2:
       "Capital ($)", min_value=10.0, value=100.0, step=10.0
   )
 
-# 3. Execution Function
+# 4. Scan Execution
 if st.button("🔍 Scan Market & Generate Blueprint", use_container_width=True):
   if not api_key:
-    st.error("Please enter your Gemini API Key above.")
+    st.error(
+        "Please enter your Gemini API Key above or add it to Streamlit"
+        " Secrets."
+    )
   else:
     with st.spinner("Analyzing market structure and querying AI..."):
       try:
         ticker_symbol = pair_choice.split("(")[1].replace(")", "").strip()
 
-        # Fetch market data
         ticker = yf.Ticker(ticker_symbol)
         df = ticker.history(period="5d", interval="1h", timeout=10)
 
