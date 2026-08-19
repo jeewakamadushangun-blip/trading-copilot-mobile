@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 import os
 import pandas as pd
 import requests
@@ -15,9 +16,20 @@ DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 
+def get_current_session():
+  current_utc_hour = datetime.now(timezone.utc).hour
+  if 7 <= current_utc_hour <= 10:
+    return "London Open (High Liquidity)"
+  elif 12 <= current_utc_hour <= 16:
+    return "London / NY Overlap (Peak Daily Volume)"
+  else:
+    return "Off-Peak / Custom Trigger"
+
+
 def send_discord_alert(title, description, color=0x00FF88):
   if not DISCORD_WEBHOOK_URL:
     return
+  session_name = get_current_session()
   payload = {
       "username": "AI Trading Copilot",
       "avatar_url": "https://cdn-icons-png.flaticon.com/512/2936/2936886.png",
@@ -27,7 +39,7 @@ def send_discord_alert(title, description, color=0x00FF88):
           "color": color,
           "footer": {
               "text": (
-                  "Strict ATR Confluence Model • Volatility-Adjusted Stops"
+                  f"Session: {session_name} • 1.5x ATR Stops • Risk < 2.5%"
               )
           },
       }],
@@ -55,6 +67,7 @@ def compute_atr(df, period=14):
 
 
 def check_markets_strict():
+  session = get_current_session()
   confirmed_setups = []
 
   for name, symbol in ASSETS.items():
@@ -118,23 +131,27 @@ ASSET: {name} (SELL SETUP)
       print(f"Error checking {name}: {e}")
 
   if not confirmed_setups:
-    print("Zero setups matched strict ATR confluence criteria. System silent.")
+    print(
+        f"Zero setups matched strict ATR confluence during {session}. System"
+        " silent."
+    )
     return
 
   market_text = "\n".join(confirmed_setups)
   prompt = f"""
 You are an ultra-conservative institutional risk manager.
-Review these technically validated setups with ATR volatility metrics:
+Review these technically validated setups detected during {session}:
 {market_text}
 
 Rule: If the setup lacks clean structure, reply ONLY with 'ABORT'.
 If valid, formulate an ATR-sized trade card:
 1. Setup: [Pair] [BUY/SELL LIMIT]
-2. Entry Price:
-3. Dynamic ATR Stop Loss: (Use 1.5x ATR buffer, dollar risk under $2.00 on $100 capital)
-4. Take Profit: (Use 3.0x ATR buffer for 1:2 R:R)
-5. Why ATR Works Here: 1 sentence on session volatility buffer.
-6. 3-step execution plan for TradingView.
+2. Active Session: {session}
+3. Recommended Entry Price:
+4. Dynamic ATR Stop Loss: (1.5x ATR buffer, dollar risk strictly under $2.00 on $100 capital)
+5. Take Profit Target: (3.0x ATR buffer for 1:2 R:R)
+6. Simple Thesis: 1 sentence on session momentum + EMA bounce.
+7. 3-step execution for TradingView on phone.
 """
 
   client = genai.Client(api_key=GEMINI_API_KEY)
@@ -144,7 +161,7 @@ If valid, formulate an ATR-sized trade card:
     )
     if "ABORT" not in response.text.upper():
       send_discord_alert(
-          title="🎯 A+ ATR VOLATILITY-SIZED SIGNAL",
+          title=f"🎯 [{session.upper()}] A+ TRADE SIGNAL",
           description=response.text,
           color=0x00FF88 if "BUY" in market_text else 0xFF3366,
       )
