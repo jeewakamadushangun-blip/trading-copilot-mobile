@@ -1,9 +1,12 @@
 from datetime import datetime, timezone
 import os
+import sqlite3
 import pandas as pd
 import requests
 import yfinance as yf
 from google import genai
+
+DB_FILE = "trades.db"
 
 ASSETS = {
     "EUR/USD": "EURUSD=X",
@@ -54,7 +57,7 @@ def send_discord_alert(title, description, asset_name, color=0x00FF88):
           "color": color,
           "footer": {
               "text": (
-                  f"Session: {session_name} • 4H-Trend Stacked • Risk < 2.5%"
+                  f"Session: {session_name} • 4H Trend Stacked • Risk < 2.5%"
               )
           },
       }],
@@ -102,11 +105,87 @@ def fetch_dxy_bias():
     return "NEUTRAL", 0.0
 
 
+def auto_check_open_trades_and_alert():
+  """Checks any logged trades and notifies Discord if TP or SL was triggered."""
+  if not os.path.exists(DB_FILE):
+    return
+
+  conn = sqlite3.connect(DB_FILE)
+  cursor = conn.cursor()
+  cursor.execute("SELECT * FROM trades WHERE status = 'OPEN'")
+  open_trades = cursor.fetchall()
+
+  for trade in open_trades:
+    trade_id = trade[0]
+    asset_name = trade[2]
+    direction = trade[3]
+    entry_price = float(trade[4])
+    stop_loss = float(trade[5])
+    take_profit = float(trade[6])
+    risk_amt = float(trade[7])
+    reward_amt = float(trade[8])
+
+    symbol = ASSETS.get(asset_name)
+    if not symbol or stop_loss == 0.0 or take_profit == 0.0:
+      continue
+
+    try:
+      ticker = yf.Ticker(symbol)
+      df = ticker.history(period="3d", interval="1h")
+      if df.empty:
+        continue
+
+      recent_high = df["High"].max()
+      recent_low = df["Low"].min()
+
+      outcome = None
+      pnl = 0.0
+
+      if "BUY" in direction.upper():
+        if recent_high >= take_profit:
+          outcome = "WIN"
+          pnl = reward_amt
+        elif recent_low <= stop_loss:
+          outcome = "LOSS"
+          pnl = -risk_amt
+
+      elif "SELL" in direction.upper():
+        if recent_low <= take_profit:
+          outcome = "WIN"
+          pnl = reward_amt
+        elif recent_high >= stop_loss:
+          outcome = "LOSS"
+          pnl = -risk_amt
+
+      if outcome:
+        cursor.execute(
+            "UPDATE trades SET status = ?, pnl = ? WHERE id = ?",
+            (outcome, pnl, trade_id),
+        )
+        conn.commit()
+
+        # Send resolution alert to Discord
+        msg = f"**Trade #{trade_id} ({asset_name} - {direction}) has hit its target!**\n\n• **Outcome:** `{outcome}`\n• **Realized PnL:** `${pnl:+.2f}`"
+        send_discord_alert(
+            title=f"🔔 TRADE AUTO-RESOLVED: {outcome} (${pnl:+.2f})",
+            description=msg,
+            asset_name=asset_name,
+            color=0x00FF88 if outcome == "WIN" else 0xFF3366,
+        )
+    except Exception:
+      continue
+
+  conn.close()
+
+
 def check_markets_strict():
   session = get_current_session()
   dxy_bias, dxy_price = fetch_dxy_bias()
   confirmed_setups = []
   primary_asset = "EUR/USD"
+
+  # First resolve any active orders
+  auto_check_open_trades_and_alert()
 
   for name, symbol in ASSETS.items():
     try:
@@ -115,7 +194,6 @@ def check_markets_strict():
       if df_1h.empty or len(df_1h) < 100:
         continue
 
-      # 1. 1-Hour Indicators
       df_1h["EMA_9"] = df_1h["Close"].ewm(span=9, adjust=False).mean()
       df_1h["EMA_50"] = df_1h["Close"].ewm(span=50, adjust=False).mean()
       df_1h["EMA_200"] = df_1h["Close"].ewm(span=200, adjust=False).mean()
@@ -130,7 +208,7 @@ def check_markets_strict():
       rsi = curr_1h["RSI"]
       atr = curr_1h["ATR"]
 
-      # 2. 4-Hour Trend Calculation
+      # 4-Hour Trend
       df_4h = (
           df_1h.resample("4h")
           .agg({
@@ -148,7 +226,6 @@ def check_markets_strict():
       is_4h_bullish = price > ema50_4h
       is_4h_bearish = price < ema50_4h
 
-      # 3. 1H Setup & Strict 4H Trend Stacking
       is_1h_bullish = (
           price > ema200_1h
           and ema9_1h > ema50_1h
@@ -165,7 +242,6 @@ def check_markets_strict():
           and curr_1h["Close"] < ema9_1h
       )
 
-      # 4. Enforce Full Confluence: 1H + 4H + DXY
       if is_1h_bullish and is_4h_bullish:
         if name in ["EUR/USD", "GBP/USD", "Gold / USD"] and dxy_bias == "BULLISH":
           print(f"Skipping {name} BUY: Blocked by Bullish DXY.")
@@ -204,10 +280,10 @@ ASSET: {name} (4H-STACKED SELL SETUP)
   market_text = "\n".join(confirmed_setups)
   prompt = f"""
 You are an ultra-conservative FX Risk Guardian.
-Review these 4H-Trend Stacked setups:
+Review these 4H-Trend Stacked setups detected during {session}:
 {market_text}
 
-Rule: If the setup lacks multi-timeframe clean flow, reply ONLY with 'ABORT'.
+Rule: If the setup lacks clean structure or contradicts DXY, reply ONLY with 'ABORT'.
 If valid, format an ATR-sized trade card:
 1. Setup: [Pair] [BUY/SELL LIMIT]
 2. Active Session: {session}
