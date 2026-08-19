@@ -2,10 +2,9 @@ name: Automatic Market Scanner Alerts
 
 on:
   schedule:
-    # Runs hourly ONLY during London Open & London/NY Overlap (Mon-Fri)
-    # UTC: 07:00-10:00 & 12:00-16:00 (12:30 PM-3:30 PM & 5:30 PM-9:30 PM Sri Lankan Time)
+    # UTC 07:00-10:00 & 12:00-16:00 (Mon-Fri)
     - cron: '0 7-10,12-16 * * 1-5'
-  workflow_dispatch: # Allows manual one-click testing anytime
+  workflow_dispatch:
 
 jobs:
   scan:
