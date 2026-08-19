@@ -264,8 +264,8 @@ Provide the full execution card for the top asset:
 
             client = genai.Client(api_key=active_api_key)
             models_to_try = [
-                "gemini-2.0-flash",
-                "gemini-1.5-flash",
+                "gemini-3.6-flash",
+                "gemini-3.6-pro",
             ]
             blueprint_text = None
             error_messages = []
