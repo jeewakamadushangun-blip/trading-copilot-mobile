@@ -9,7 +9,7 @@ from google import genai
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(
-    page_title="AI Multi-Asset Radar & 4H Trend Copilot",
+    page_title="AI Multi-Asset Radar & Auto-Journal",
     page_icon="📡",
     layout="centered",
     initial_sidebar_state="collapsed",
@@ -112,10 +112,78 @@ def delete_trade(trade_id):
   conn.close()
 
 
+def auto_resolve_open_trades():
+  conn = sqlite3.connect(DB_FILE)
+  cursor = conn.cursor()
+  cursor.execute("SELECT * FROM trades WHERE status = 'OPEN'")
+  open_trades = cursor.fetchall()
+
+  if not open_trades:
+    conn.close()
+    return 0
+
+  resolved_count = 0
+  for trade in open_trades:
+    trade_id = trade[0]
+    asset_name = trade[2]
+    direction = trade[3]
+    entry_price = float(trade[4])
+    stop_loss = float(trade[5])
+    take_profit = float(trade[6])
+    risk_amt = float(trade[7])
+    reward_amt = float(trade[8])
+
+    symbol = ASSETS.get(asset_name)
+    if not symbol or stop_loss == 0.0 or take_profit == 0.0:
+      continue
+
+    try:
+      ticker = yf.Ticker(symbol)
+      df = ticker.history(period="5d", interval="1h")
+      if df.empty:
+        continue
+
+      recent_high = df["High"].max()
+      recent_low = df["Low"].min()
+
+      outcome = None
+      pnl = 0.0
+
+      if "BUY" in direction.upper():
+        if recent_high >= take_profit:
+          outcome = "WIN"
+          pnl = reward_amt
+        elif recent_low <= stop_loss:
+          outcome = "LOSS"
+          pnl = -risk_amt
+
+      elif "SELL" in direction.upper():
+        if recent_low <= take_profit:
+          outcome = "WIN"
+          pnl = reward_amt
+        elif recent_high >= stop_loss:
+          outcome = "LOSS"
+          pnl = -risk_amt
+
+      if outcome:
+        cursor.execute(
+            "UPDATE trades SET status = ?, pnl = ? WHERE id = ?",
+            (outcome, pnl, trade_id),
+        )
+        resolved_count += 1
+
+    except Exception:
+      continue
+
+  conn.commit()
+  conn.close()
+  return resolved_count
+
+
 init_db()
 
 
-# --- INDICATORS & MULTI-TIMEFRAME RESAMPLING ---
+# --- INDICATORS & TECHNICAL ANALYSIS ---
 def compute_atr(df, period=14):
   high = df["High"]
   low = df["Low"]
@@ -151,12 +219,7 @@ def fetch_dxy_regime():
           "trend": "BEARISH 🔴",
           "bias": "FAVOR EUR/GBP/GOLD BUYS & USD SELLS",
       }
-    else:
-      return {
-          "price": price,
-          "trend": "CHOP / RANGE ⚪",
-          "bias": "NEUTRAL RANGE",
-      }
+    return {"price": price, "trend": "CHOP / RANGE ⚪", "bias": "NEUTRAL"}
   except Exception:
     return {"price": 0.0, "trend": "UNAVAILABLE", "bias": "Standard"}
 
@@ -164,12 +227,10 @@ def fetch_dxy_regime():
 def fetch_single_asset(name, symbol):
   try:
     ticker = yf.Ticker(symbol)
-    # Fetch 30 days of 1-hour data to build accurate 4-hour candles
     df_1h = ticker.history(period="30d", interval="1h", timeout=10)
     if df_1h.empty or len(df_1h) < 100:
       return None
 
-    # 1. 1-Hour Indicators
     df_1h["EMA_9"] = df_1h["Close"].ewm(span=9, adjust=False).mean()
     df_1h["EMA_50"] = df_1h["Close"].ewm(span=50, adjust=False).mean()
     df_1h["EMA_200"] = df_1h["Close"].ewm(span=200, adjust=False).mean()
@@ -182,7 +243,6 @@ def fetch_single_asset(name, symbol):
     ema200_1h = latest_1h["EMA_200"]
     atr = latest_1h["ATR"]
 
-    # 2. 4-Hour Resampling & 4H 50 EMA Calculation
     df_4h = (
         df_1h.resample("4h")
         .agg({
@@ -194,12 +254,10 @@ def fetch_single_asset(name, symbol):
         })
         .dropna()
     )
-
     df_4h["EMA_50"] = df_4h["Close"].ewm(span=50, adjust=False).mean()
-    latest_4h = df_4h.iloc[-1]
-    ema50_4h = latest_4h["EMA_50"]
-    trend_4h = "BULLISH 🟢" if price > ema50_4h else "BEARISH 🔴"
+    ema50_4h = df_4h["EMA_50"].iloc[-1]
 
+    trend_4h = "BULLISH 🟢" if price > ema50_4h else "BEARISH 🔴"
     trend_1h = (
         "BULLISH 🟢"
         if price > ema50_1h and ema9_1h > ema50_1h
@@ -210,7 +268,6 @@ def fetch_single_asset(name, symbol):
         )
     )
 
-    # 3. Multi-Timeframe Alignment Status
     if "BULLISH" in trend_1h and "BULLISH" in trend_4h:
       mtf_status = "ALIGNED BULLISH 🚀"
     elif "BEARISH" in trend_1h and "BEARISH" in trend_4h:
@@ -255,11 +312,11 @@ tab_radar, tab_journal = st.tabs(
 )
 
 # ==========================================
-# TAB 1: RADAR WITH 4H TREND STACKING
+# TAB 1: RADAR & AI BLUEPRINT
 # ==========================================
 with tab_radar:
-  st.title("📡 Multi-Asset Radar & 4H Copilot")
-  st.caption("4H Macro Trend Stacking • 1H Dynamic Pullbacks • DXY Shield")
+  st.title("📡 Multi-Asset Radar & Copilot")
+  st.caption("4H Trend Stacking • DXY Macro Shield • Dynamic 1.5x ATR Stops")
 
   raw_secret_key = ""
   if "GEMINI_API_KEY" in st.secrets:
@@ -328,7 +385,7 @@ with tab_radar:
             for name, d in radar_data.items():
               market_snapshot_text += f"""
 ASSET: {name} ({d['symbol']})
-- Live Price: {d['price']:.5f} | 14 ATR: {d['atr']:.5f}
+- Live Price: {d['price']:.5f} | 14 ATR: {d['atr']:.5f} (1.5x SL: {1.5 * d['atr']:.5f})
 - 1-Hour: 9 EMA: {d['ema9_1h']:.5f} | 50 EMA: {d['ema50_1h']:.5f} | 200 EMA: {d['ema200_1h']:.5f} ({d['trend_1h']})
 - 4-Hour: 50 EMA: {d['ema50_4h']:.5f} ({d['trend_4h']})
 - Multi-Timeframe Status: {d['mtf_status']}
@@ -336,28 +393,28 @@ ASSET: {name} ({d['symbol']})
 
             max_risk_cap = account_balance * 0.025
             prompt = f"""
-You are an elite Institutional FX Risk Guardian.
-Analyze this multi-timeframe 4-asset technical snapshot with 4-Hour Trend Stacking and DXY correlation:
+You are an institutional FX Risk Guardian.
+Review this 4-asset multi-timeframe snapshot with 4H trend stacking and DXY correlation:
 {market_snapshot_text}
 
-Account Capital: ${account_balance:.2f} (Max Risk: Under ${max_risk_cap:.2f}).
+Account Capital: ${account_balance:.2f} (Strict max loss under ${max_risk_cap:.2f}).
 Position Sizing: 0.01 micro lot (1,000 units).
 
-STRICT 4H TREND STACKING RULES:
+RULES:
 - ONLY allow BUY setups if 1-Hour is Bullish AND 4-Hour is Bullish (Price > 4H 50 EMA).
 - ONLY allow SELL setups if 1-Hour is Bearish AND 4-Hour is Bearish (Price < 4H 50 EMA).
-- Reject any pair where 1H and 4H are in conflict (MTF Status: CONFLICT / WAIT).
+- DXY Alignment: If DXY is Bullish, reject EUR/GBP/Gold Buys. If Bearish, reject EUR/GBP/Gold Sells.
 
 Output:
 ## 1. WATCHLIST OPPORTUNITY RADAR
-Rank all 4 pairs. State whether 4H and 1H trends agree.
+Rank all 4 pairs and check MTF + DXY confluence.
 
-## 2. TOP ACTIONABLE BLUEPRINT CARD (Strictly 4H-Aligned Setup)
+## 2. TOP ACTIONABLE BLUEPRINT CARD (Highest 4H-Aligned Setup)
 - **Asset & Order Type**: (e.g. EUR/USD - BUY LIMIT)
 - **Recommended Entry Price**:
 - **Dynamic ATR Stop Loss Price**: (1.5x ATR buffer, dollar risk under ${max_risk_cap:.2f})
 - **Take Profit Target Price**: (3.0x ATR buffer for 1:2 RRR)
-- **4H + 1H Alignment Thesis**: (2 sentences on 4H trend + 1H 9 EMA bounce confirmation)
+- **4H + 1H Alignment Thesis**: (2 simple sentences)
 - **15-Second Action Plan on TradingView**: (3 clean execution steps)
 """
 
@@ -372,7 +429,7 @@ Rank all 4 pairs. State whether 4H and 1H trends agree.
               st.success("4H Trend Stacking Scan Complete!")
               st.markdown(response.text)
             else:
-              st.error("Failed to generate trade blueprint. Please retry.")
+              st.error("Failed to generate blueprint. Please retry.")
 
         except Exception as e:
           st.error(f"Scan Error: {str(e)}")
@@ -418,7 +475,7 @@ Rank all 4 pairs. State whether 4H and 1H trends agree.
         )
       with c4:
         log_notes = st.text_input(
-            "Strategy Notes", value="4H-Stacked ATR Setup"
+            "Strategy Notes", value="4H-Aligned ATR Setup"
         )
 
       if st.form_submit_button(
@@ -438,14 +495,23 @@ Rank all 4 pairs. State whether 4H and 1H trends agree.
             pnl=0.0,
             notes=log_notes,
         )
-        st.success(f"Saved {log_asset} trade to active database.")
+        st.success(f"Saved {log_asset} trade. Auto-Tracking is now active!")
 
 
 # ==========================================
-# TAB 2: TRADE JOURNAL & PERFORMANCE TRACKER
+# TAB 2: AUTOMATED JOURNAL & ANALYTICS
 # ==========================================
 with tab_journal:
   st.title("📓 Trade Performance Dashboard")
+
+  # Auto-resolve any open trades that reached TP/SL in recent market candles
+  resolved_trades = auto_resolve_open_trades()
+  if resolved_trades > 0:
+    st.toast(
+        f"🎯 {resolved_trades} open position(s) reached TP/SL and were"
+        " auto-resolved!",
+        icon="🔔",
+    )
 
   trades_df = fetch_trades()
 
@@ -485,11 +551,11 @@ with tab_journal:
           use_container_width=True,
       )
 
-    st.subheader("⏳ Active / Open Positions")
+    st.subheader("⏳ Active / Open Positions (Auto-Tracking)")
     open_trades = trades_df[trades_df["status"] == "OPEN"]
 
     if open_trades.empty:
-      st.caption("No open positions pending.")
+      st.caption("No active positions open. All orders resolved.")
     else:
       for _, row in open_trades.iterrows():
         with st.expander(
