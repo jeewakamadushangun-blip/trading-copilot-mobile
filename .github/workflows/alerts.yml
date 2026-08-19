@@ -2,8 +2,9 @@ name: Automatic Market Scanner Alerts
 
 on:
   schedule:
-    # Runs at minute 0 past every hour, Monday through Friday
-    - cron: '0 * * * 1-5'
+    # Runs hourly ONLY during London Open & London/NY Overlap (Mon-Fri)
+    # UTC: 07:00-10:00 & 12:00-16:00 (12:30 PM-3:30 PM & 5:30 PM-9:30 PM Sri Lankan Time)
+    - cron: '0 7-10,12-16 * * 1-5'
   workflow_dispatch: # Allows manual one-click testing anytime
 
 jobs:
@@ -11,10 +12,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Setup Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
