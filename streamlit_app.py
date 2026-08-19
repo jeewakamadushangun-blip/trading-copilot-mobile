@@ -179,7 +179,9 @@ with tab_radar:
 
   raw_secret_key = ""
   if "GEMINI_API_KEY" in st.secrets:
-    raw_secret_key = str(st.secrets["GEMINI_API_KEY"]).strip().strip('"').strip("'")
+    raw_secret_key = (
+        str(st.secrets["GEMINI_API_KEY"]).strip().strip('"').strip("'")
+    )
 
   api_key_input = st.text_input(
       "Gemini API Key",
@@ -262,13 +264,11 @@ Provide the full execution card for the top asset:
 
             client = genai.Client(api_key=active_api_key)
             models_to_try = [
-                "gemini-2.5-flash",
                 "gemini-2.0-flash",
                 "gemini-1.5-flash",
-                "gemini-1.5-pro",
             ]
             blueprint_text = None
-            last_err = None
+            error_messages = []
 
             for model_name in models_to_try:
               try:
@@ -279,7 +279,7 @@ Provide the full execution card for the top asset:
                   blueprint_text = response.text
                   break
               except Exception as e:
-                last_err = str(e)
+                error_messages.append(f"{model_name}: {str(e)}")
                 continue
 
             if blueprint_text:
@@ -288,7 +288,7 @@ Provide the full execution card for the top asset:
               st.success("Radar Scan Complete!")
               st.markdown(blueprint_text)
             else:
-              st.error(f"API Error details: {last_err}")
+              st.error("API Errors: " + " | ".join(error_messages))
 
         except Exception as e:
           st.error(f"Scan Error: {str(e)}")
