@@ -1,17 +1,22 @@
-import json
-import sqlite3
 from datetime import datetime
+import json
+import os
+import sqlite3
 from flask import Flask, jsonify, request
 import requests
 
 app = Flask(__name__)
 
 # --- CONFIGURATION ---
-DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1540037811485286460/CbOoMZKBBhLmK_pDG-NMGl824teSX2w-eG0jeQiGR6YicXLOJoA4qLZJyGhin5Y0n8RP"
+# Discord Webhook URL (reads from Render Environment Variables or defaults to hardcoded)
+DISCORD_WEBHOOK_URL = os.environ.get(
+    "DISCORD_WEBHOOK_URL", "YOUR_DISCORD_WEBHOOK_URL_HERE"
+)
 DB_PATH = "trading_journal.db"
 
 
 def init_db():
+  """Initialize SQLite trade journaling database."""
   conn = sqlite3.connect(DB_PATH)
   cursor = conn.cursor()
   cursor.execute("""
@@ -34,14 +39,21 @@ init_db()
 
 
 def send_discord_alert(ticker, action, entry, sl, tp):
-  color = 3066993 if action == "BUY" else 15158332  # Green for BUY, Red for SELL
+  """Dispatches rich embed cards directly to Discord."""
+  if "YOUR_DISCORD_WEBHOOK_URL_HERE" in DISCORD_WEBHOOK_URL:
+    print("[WARNING] Discord Webhook URL not configured.")
+    return
+
+  is_buy = action.upper() == "BUY"
+  color = 3066993 if is_buy else 15158332  # Green for BUY, Red for SELL
   risk_pips = abs(entry - sl) * 10000
   reward_pips = abs(tp - entry) * 10000
 
   embed_payload = {
       "username": "AI Forex Gatekeeper",
+      "avatar_url": "https://i.imgur.com/4M34hi2.png",
       "embeds": [{
-          "title": f"🚨 High-Confidence Alert: {action} {ticker}",
+          "title": f"🚨 High-Confidence Alert: {action.upper()} {ticker}",
           "color": color,
           "fields": [
               {
@@ -60,59 +72,99 @@ def send_discord_alert(ticker, action, entry, sl, tp):
                   "inline": True,
               },
               {
-                  "name": "📐 Risk Parameters",
+                  "name": "📐 Execution Checklist",
                   "value": (
-                      "• **Risk Cap:** 2.0% ($2.00 on $100)\n• **Lot Size:**"
-                      " 0.01 micro\n• **Order Type:** Limit Order"
+                      "• **Risk Limit:** 2.0% ($2.00 on $100)\n"
+                      "• **Lot Size:** 0.01 micro lot\n"
+                      "• **Order Type:** Limit Order near 9 EMA\n"
+                      "• **Time In Force:** Day / Session Close"
                   ),
                   "inline": False,
               },
           ],
-          "footer": {"text": "Verified Confluence: 4H Trend + 1H EMA + DXY"},
+          "footer": {"text": "Verified: 4H Stacking + 1H EMA + DXY Regime"},
           "timestamp": datetime.utcnow().isoformat(),
       }],
   }
-  requests.post(DISCORD_WEBHOOK_URL, json=embed_payload)
+
+  try:
+    response = requests.post(DISCORD_WEBHOOK_URL, json=embed_payload, timeout=5)
+    print(f"[DISCORD] Dispatched: Status {response.status_code}")
+  except Exception as e:
+    print(f"[ERROR] Failed to send Discord alert: {e}")
+
+
+@app.route("/", methods=["GET"])
+def health_check():
+  """Health check route for cloud uptime monitoring."""
+  return (
+      jsonify({
+          "status": "online",
+          "service": "Forex Webhook Receiver",
+          "timestamp": datetime.utcnow().isoformat(),
+      }),
+      200,
+  )
 
 
 @app.route("/tradingview-webhook", methods=["POST"])
 def tradingview_webhook():
-  payload = request.json
+  """Receives incoming JSON alerts from TradingView."""
+  try:
+    payload = request.get_json(force=True)
+  except Exception:
+    payload = request.form.to_dict()
+
   if not payload:
-    return jsonify({"status": "error", "message": "Missing JSON payload"}), 400
+    return (
+        jsonify({"status": "error", "message": "No JSON payload received"}),
+        400,
+    )
 
   ticker = payload.get("ticker", "EURUSD")
-  action = payload.get("action", "BUY")
+  action = payload.get("action", "BUY").upper()
   entry = float(payload.get("entry", 0.0))
   sl = float(payload.get("sl", 0.0))
   tp = float(payload.get("tp", 0.0))
 
-  # 1. Log trade into SQLite journal
-  conn = sqlite3.connect(DB_PATH)
-  cursor = conn.cursor()
-  cursor.execute(
-      """
-        INSERT INTO journal (timestamp, ticker, action, entry_price, stop_loss, take_profit, status)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    """,
-      (
-          datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
-          ticker,
-          action,
-          entry,
-          sl,
-          tp,
-          "PENDING",
-      ),
-  )
-  conn.commit()
-  conn.close()
+  # 1. Log trade to SQLite
+  try:
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+            INSERT INTO journal (timestamp, ticker, action, entry_price, stop_loss, take_profit, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+            ticker,
+            action,
+            entry,
+            sl,
+            tp,
+            "PENDING",
+        ),
+    )
+    conn.commit()
+    conn.close()
+  except Exception as db_err:
+    print(f"[DATABASE ERROR] {db_err}")
 
-  # 2. Dispatch alert to Discord
+  # 2. Forward alert to Discord
   send_discord_alert(ticker, action, entry, sl, tp)
 
-  return jsonify({"status": "success", "logged": True}), 200
+  return (
+      jsonify({
+          "status": "success",
+          "logged": True,
+          "ticker": ticker,
+          "action": action,
+      }),
+      200,
+  )
 
 
 if __name__ == "__main__":
-  app.run(host="0.0.0.0", port=5000)
+  port = int(os.environ.get("PORT", 5000))
+  app.run(host="0.0.0.0", port=port)
