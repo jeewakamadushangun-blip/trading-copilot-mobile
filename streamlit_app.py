@@ -106,12 +106,26 @@ def calculate_rsi(series, period=14):
     return 100 - (100 / (1 + rs))
 
 
-# --- CACHED DATA FETCHING ---
-@st.cache_data(ttl=50)
+# --- ROBUST CACHED DATA FETCHING ---
+@st.cache_data(ttl=45)
 def fetch_market_data():
-    """Caches data to prevent blocking WebSocket handshakes."""
-    df_1h = yf.download("EURUSD=X", period="1mo", interval="60m", progress=False)
-    return df_1h
+    """Fetches market data using resilient Ticker history with fallback."""
+    try:
+        ticker = yf.Ticker("EURUSD=X")
+        df = ticker.history(period="1mo", interval="1h")
+        if not df.empty and len(df) > 20:
+            return df
+    except Exception:
+        pass
+
+    try:
+        df = yf.download("EURUSD=X", period="1mo", interval="60m", progress=False)
+        if not df.empty and len(df) > 20:
+            return df
+    except Exception:
+        pass
+
+    return pd.DataFrame()
 
 
 # --- HEADER & STATUS ---
