@@ -10,7 +10,7 @@ app = Flask(__name__)
 # --- CONFIGURATION ---
 # Discord Webhook URL (reads from Render Environment Variables or defaults to hardcoded)
 DISCORD_WEBHOOK_URL = os.environ.get(
-    "DISCORD_WEBHOOK_URL", "YOUR_DISCORD_WEBHOOK_URL_HERE"
+    "DISCORD_WEBHOOK_URL", "https://discord.com/api/webhooks/1540037811485286460/CbOoMZKBBhLmK_pDG-NMGl824teSX2w-eG0jeQiGR6YicXLOJoA4qLZJyGhin5Y0n8RP"
 )
 DB_PATH = "trading_journal.db"
 
