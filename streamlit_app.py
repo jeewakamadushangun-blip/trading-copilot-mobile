@@ -43,7 +43,7 @@ def send_discord_alert(symbol, action, entry, sl, tp, rsi_val, dxy_status, decim
         return False
 
     is_buy = action.upper() == "BUY"
-    color = 3066993 if is_buy else 15158332  # Green / Red
+    color = 3066993 if is_buy else 15158332
     risk_pips = abs(entry - sl) * pip_mult
     reward_pips = abs(tp - entry) * pip_mult
     tag = "🧪 [TEST VERIFICATION]" if is_test else "🚨 [A+ HIGH-CONFIDENCE SETUP]"
@@ -139,7 +139,7 @@ st.caption(f"Last scan run: `{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%
 # --- 1. DXY (DOLLAR INDEX) MACRO ENGINE ---
 dxy_df = get_ticker_data(DXY_TICKER)
 if dxy_df.empty:
-    dxy_df = get_ticker_data("DX=F")  # Fallback to DXY Futures if Cash Index unavailable
+    dxy_df = get_ticker_data("DX=F")  # Fallback to DXY Futures
 
 dxy_trend = "NEUTRAL"
 dxy_close = 0.0
@@ -158,11 +158,22 @@ if not dxy_df.empty:
     else:
         dxy_trend = "BEARISH (USD Weakness)"
 
-# DXY Macro Banner
 col_dxy1, col_dxy2, col_dxy3 = st.columns([1, 1, 2])
 col_dxy1.metric("DXY Index Live", f"{dxy_close:.2f}")
 col_dxy2.metric("DXY 200 EMA", f"{dxy_ema200:.2f}")
 col_dxy3.info(f"🌐 **DXY Macro Bias:** `{dxy_trend}`")
+
+# --- PROMINENT ACTION CONTROLS BAR ---
+col_act1, col_act2, col_empty = st.columns([1.5, 1.5, 3])
+with col_act1:
+    if st.button("🔄 Manual Scan Now", type="primary", use_container_width=True):
+        st.cache_data.clear()
+        st.rerun()
+
+with col_act2:
+    if st.button("🧪 Send Test Alert (EUR/USD)", use_container_width=True):
+        send_discord_alert("EUR/USD", "BUY", 1.16809, 1.16553, 1.17321, 50.7, dxy_trend, decimals=5, pip_mult=10000, is_test=True)
+        st.toast("✅ Test alert sent to Discord!")
 
 st.divider()
 
@@ -194,7 +205,7 @@ for pair_name, cfg in WATCHLIST.items():
     curr_ema200 = float(ema200.iloc[-1])
     curr_rsi = float(rsi.iloc[-1])
 
-    # DXY Multi-Timeframe Filter Logic
+    # Macro Confluence Check via DXY
     if cfg["inverse_dxy"]:
         dxy_confirms_buy = "BEARISH" in dxy_trend
         dxy_confirms_sell = "BULLISH" in dxy_trend
@@ -202,7 +213,6 @@ for pair_name, cfg in WATCHLIST.items():
         dxy_confirms_buy = "BULLISH" in dxy_trend
         dxy_confirms_sell = "BEARISH" in dxy_trend
 
-    # Technical Confluence
     bull_stack = (curr_close > curr_ema200) and (curr_ema9 > curr_ema50)
     bull_pb = (curr_low <= curr_ema9) and (curr_close >= curr_ema9) and (40 <= curr_rsi <= 60)
     is_buy = bull_stack and bull_pb and dxy_confirms_buy
@@ -215,7 +225,6 @@ for pair_name, cfg in WATCHLIST.items():
     if is_buy:
         signal_status = "BUY"
         tp = curr_close + ((curr_close - curr_ema50) * 2.0)
-        # Alert Debounce
         if st.session_state.alert_history.get(pair_name) != "BUY":
             send_discord_alert(pair_name, "BUY", curr_close, curr_ema50, tp, curr_rsi, dxy_trend, cfg["decimals"], cfg["pip_mult"])
             st.session_state.alert_history[pair_name] = "BUY"
@@ -242,15 +251,6 @@ for pair_name, cfg in WATCHLIST.items():
         "Setup Status": signal_status
     })
 
-# Render Multi-Asset Overview Table
+# Render Active Watchlist
 st.write("### 📊 Active Market Watchlist")
 st.dataframe(pd.DataFrame(results_summary), use_container_width=True)
-
-# --- 3. DIAGNOSTICS & VERIFICATION ---
-st.divider()
-st.write("### Diagnostics & Webhook Verification")
-col_btn, col_txt = st.columns([1, 4])
-with col_btn:
-    if st.button("🧪 Send Test Alert (EUR/USD)", use_container_width=True):
-        send_discord_alert("EUR/USD", "BUY", 1.16809, 1.16553, 1.17321, 50.7, dxy_trend, decimals=5, pip_mult=10000, is_test=True)
-        st.success("Test alert sent to Discord!")
