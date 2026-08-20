@@ -203,4 +203,8 @@ if not data_1h.empty:
   st.dataframe(
       data_1h.tail(10)[["Open", "High", "Low", "Close"]],
       use_container_width=True,
+
+      if st.button("🧪 Send Test Discord Alert"):
+  send_discord_alert("EURUSD", "BUY", curr_close, curr_ema50, curr_close + 0.0050, curr_rsi)
+  st.success("Test alert dispatched! Check your Discord app.")
   )
